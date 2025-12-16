@@ -81,6 +81,21 @@
 #
 # Press 'q' to quit
 #
+# STEP 8: SETUP GITHUB AUTHENTICATION (For auto-push feature)
+# -----------------------------------------------------------
+# Option A - SSH Key (Recommended):
+#   ssh-keygen -t ed25519 -C "santanderjoseph13@gmail.com"
+#   eval "$(ssh-agent -s)"
+#   ssh-add ~/.ssh/id_ed25519
+#   cat ~/.ssh/id_ed25519.pub  # Add this to GitHub Settings -> SSH Keys
+#   git remote set-url origin git@github.com:Sunthunder0813/Illegal-Parking-Detection.git
+#
+# Option B - Personal Access Token:
+#   1. GitHub.com -> Settings -> Developer settings -> Personal access tokens
+#   2. Generate token with 'repo' scope
+#   3. Run: git config --global credential.helper store
+#   4. First push will ask for username and token (use token as password)
+#
 # =============================================================================
 
 import os
@@ -91,6 +106,33 @@ from queue import Queue
 import sys
 import time
 import subprocess
+
+# -----------------------------
+# GitHub Push Configuration
+# -----------------------------
+# TODO: Set these options for automatic GitHub push
+ENABLE_GITHUB_PUSH = True           # Set to True to enable auto-push
+PUSH_INTERVAL_SECONDS = 60          # How often to push results (minimum seconds between pushes)
+SAVE_DETECTION_IMAGES = True        # Save images with detections
+MIN_DETECTIONS_TO_SAVE = 1          # Minimum detections to trigger a save
+
+# Get the project directory (where this script is located)
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Import GitHub push module
+try:
+    from github_push import setup_git, push_detection_event, push_to_github, init_repo
+    GITHUB_AVAILABLE = True
+    if ENABLE_GITHUB_PUSH:
+        setup_git()
+        init_repo(PROJECT_DIR)
+        print("✅ GitHub push enabled")
+except ImportError:
+    GITHUB_AVAILABLE = False
+    print("⚠️ GitHub push module not found. Auto-push disabled.")
+
+# Track last push time
+last_push_time = 0
 
 # -----------------------------
 # Check Hailo Platform
@@ -369,8 +411,12 @@ last_frames = [None for _ in cameras]
 
 print("🚀 Starting vehicle detection...")
 
+# -----------------------------
+# Main loop with GitHub push
+# -----------------------------
 while True:
     frames = []
+    current_time = time.time()
     
     # Process each camera stream
     for i, cam in enumerate(cameras):
@@ -404,6 +450,26 @@ while True:
             
             # Display camera name
             cv2.putText(frame, cam['name'], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            
+            # -----------------------------
+            # GitHub Push Logic
+            # -----------------------------
+            # Push detection results to GitHub if enabled and enough time has passed
+            if (ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE and 
+                len(detections) >= MIN_DETECTIONS_TO_SAVE and
+                (current_time - last_push_time) >= PUSH_INTERVAL_SECONDS):
+                
+                # Save frame with detections drawn
+                frame_to_save = frame.copy() if SAVE_DETECTION_IMAGES else None
+                
+                # Push in a separate thread to avoid blocking the main loop
+                push_thread = threading.Thread(
+                    target=push_detection_event,
+                    args=(PROJECT_DIR, detections, cam['name'], frame_to_save, True),
+                    daemon=True
+                )
+                push_thread.start()
+                last_push_time = current_time
 
         frames.append(frame)
 
@@ -426,9 +492,15 @@ while True:
         break
 
 # -----------------------------
-# Cleanup
+# Cleanup with final push
 # -----------------------------
 stop_threads = True
+
+# Final push of any remaining results
+if ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE:
+    print("📤 Final push to GitHub...")
+    push_to_github(PROJECT_DIR, "Final detection results - session ended")
+
 for cap in caps:
     if cap.isOpened():
         cap.release()
@@ -436,7 +508,6 @@ cv2.destroyAllWindows()
 
 if HAILO_AVAILABLE and target:
     try:
-        # Release the Hailo resources
         target.release()
     except Exception as e:
         print(f"⚠️ Failed to release Hailo VDevice: {e}")
