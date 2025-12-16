@@ -3,6 +3,15 @@
 # Vehicle detection with multi-camera support
 
 # =============================================================================
+# FIX FOR SEGMENTATION FAULT AND QT ERRORS
+# =============================================================================
+# Set environment variables BEFORE importing cv2
+import os
+os.environ["QT_QPA_PLATFORM"] = "xcb"  # Force X11 instead of Wayland
+os.environ["OPENCV_VIDEOIO_PRIORITY_FFMPEG"] = "1"
+os.environ["QT_LOGGING_RULES"] = "*.debug=false"  # Suppress Qt warnings
+
+# =============================================================================
 # WHAT YOU NEED TO DO (Raspberry Pi 5 + Hailo AI Kit Setup)
 # =============================================================================
 #
@@ -35,27 +44,17 @@
 #   - AI Kit is properly seated on the Pi
 #   - PCIe is enabled in /boot/config.txt
 #
-# STEP 3: GET THE HEF FILE (CRITICAL!)
+# STEP 3: GET THE HEF FILE (CRITICAL!) - UPDATED INSTRUCTIONS
 # ------------------------------------
-# The .hef file CANNOT be created on the Raspberry Pi!
-# You have TWO options:
+# Run this command on your Raspberry Pi to download the HEF file:
 #
-# OPTION A: Download pre-compiled HEF from Hailo Model Zoo (EASIEST)
-#   1. Go to: https://github.com/hailo-ai/hailo_model_zoo/releases
-#   2. Download yolov8n.hef for hailo8l
-#   3. Or use hailo_model_zoo CLI:
-#      pip install hailo_model_zoo
-#      hailomz compile yolov8n --hw-arch hailo8l --har /path/to/save
+#   wget -O /home/set-admin/Illegal-Parking-Detection/yolov8n.hef \
+#     https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef
 #
-# OPTION B: Compile yourself on x86 Ubuntu machine
-#   1. Get an x86 Ubuntu 20.04/22.04 machine
-#   2. Install Hailo Dataflow Compiler (DFC) from developer.hailo.ai
-#   3. Transfer your yolov8n.onnx to that machine
-#   4. Run:
-#      hailo parser onnx yolov8n.onnx --hw-arch hailo8l
-#      hailo optimize yolov8n.har
-#      hailo compiler yolov8n.har --hw-arch hailo8l
-#   5. Transfer resulting yolov8n.hef back to your Pi
+# OR check if Hailo already installed example models:
+#   ls /usr/share/hailo-models/
+#   # If yolov8n.hef exists there, copy it:
+#   cp /usr/share/hailo-models/yolov8n.hef /home/set-admin/Illegal-Parking-Detection/
 #
 # STEP 4: PLACE THE HEF FILE
 # --------------------------
@@ -98,7 +97,6 @@
 #
 # =============================================================================
 
-import os
 import cv2
 import numpy as np
 import threading
@@ -106,20 +104,31 @@ from queue import Queue
 import sys
 import time
 import subprocess
+import signal
+
+# -----------------------------
+# Graceful shutdown handler (prevents segfault on Ctrl+C)
+# -----------------------------
+shutdown_requested = False
+
+def signal_handler(sig, frame):
+    global shutdown_requested
+    print("\n⚠️ Shutdown requested...")
+    shutdown_requested = True
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 # -----------------------------
 # GitHub Push Configuration
 # -----------------------------
-# TODO: Set these options for automatic GitHub push
-ENABLE_GITHUB_PUSH = True           # Set to True to enable auto-push
-PUSH_INTERVAL_SECONDS = 60          # How often to push results (minimum seconds between pushes)
-SAVE_DETECTION_IMAGES = True        # Save images with detections
-MIN_DETECTIONS_TO_SAVE = 1          # Minimum detections to trigger a save
+ENABLE_GITHUB_PUSH = True
+PUSH_INTERVAL_SECONDS = 60
+SAVE_DETECTION_IMAGES = True
+MIN_DETECTIONS_TO_SAVE = 1
 
-# Get the project directory (where this script is located)
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Import GitHub push module
 try:
     from github_push import setup_git, push_detection_event, push_to_github, init_repo
     GITHUB_AVAILABLE = True
@@ -131,13 +140,11 @@ except ImportError:
     GITHUB_AVAILABLE = False
     print("⚠️ GitHub push module not found. Auto-push disabled.")
 
-# Track last push time
 last_push_time = 0
 
 # -----------------------------
 # Check Hailo Platform
 # -----------------------------
-# TODO: If this import fails, you need to install hailo-all package (see STEP 1 above)
 HAILO_AVAILABLE = False
 try:
     from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
@@ -146,16 +153,60 @@ try:
 except ImportError:
     print("⚠️ Hailo platform library (hailo_platform) not found.")
     print("   RUN: sudo apt install hailo-all && sudo reboot")
-    # Fallback uses Ultralytics YOLO library (CPU - VERY SLOW on Pi!)
     from ultralytics import YOLO
 
 # -----------------------------
 # Paths
 # -----------------------------
-# TODO: Make sure these paths exist on your Raspberry Pi
 PT_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.pt"
 ONNX_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.onnx"
-HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"  # <-- YOU MUST PROVIDE THIS FILE!
+HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
+
+# -----------------------------
+# Auto-download HEF if missing
+# -----------------------------
+def download_hef():
+    """Attempt to download HEF from Hailo Model Zoo or copy from system"""
+    print("🔍 Attempting to find/download HEF file...")
+    
+    # Option 1: Check system-installed models
+    system_hef_paths = [
+        "/usr/share/hailo-models/yolov8n.hef",
+        "/usr/share/hailo/models/yolov8n.hef",
+        "/opt/hailo/models/yolov8n.hef"
+    ]
+    
+    for path in system_hef_paths:
+        if os.path.isfile(path):
+            print(f"✅ Found system HEF: {path}")
+            try:
+                import shutil
+                shutil.copy(path, HEF_MODEL)
+                print(f"✅ Copied to: {HEF_MODEL}")
+                return True
+            except Exception as e:
+                print(f"⚠️ Failed to copy: {e}")
+    
+    # Option 2: Try to download from Hailo Model Zoo
+    hef_urls = [
+        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef",
+        "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/yolov8n_h8l.hef"
+    ]
+    
+    for url in hef_urls:
+        print(f"📥 Trying to download from: {url}")
+        try:
+            result = subprocess.run(
+                ["wget", "-q", "--show-progress", "-O", HEF_MODEL, url],
+                timeout=120
+            )
+            if result.returncode == 0 and os.path.isfile(HEF_MODEL) and os.path.getsize(HEF_MODEL) > 1000:
+                print(f"✅ Downloaded HEF successfully!")
+                return True
+        except Exception as e:
+            print(f"⚠️ Download failed: {e}")
+    
+    return False
 
 # -----------------------------
 # Export PT -> ONNX if missing
@@ -174,72 +225,59 @@ if not os.path.isfile(ONNX_MODEL):
         sys.exit(1)
 
 # -----------------------------
-# Check for HEF (Model must be pre-compiled on x86 machine)
+# Check for HEF - Now with auto-download
 # -----------------------------
-# TODO: THIS IS THE MOST IMPORTANT STEP!
-# You MUST have a .hef file to use Hailo acceleration
-# See STEP 3 above for how to get it
 if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
-    print("❌ HEF file not found.")
-    print("=" * 60)
-    print("CRITICAL: You need to provide a .hef file!")
-    print("")
-    print("EASIEST OPTION - Download from Hailo Model Zoo:")
-    print("  1. Visit: https://github.com/hailo-ai/hailo_model_zoo")
-    print("  2. Download yolov8n HEF for hailo8l")
-    print("  3. Copy to: " + HEF_MODEL)
-    print("")
-    print("OR use Hailo's example models:")
-    print("  ls /usr/share/hailo-models/")
-    print("=" * 60)
-    print("Falling back to CPU inference (WILL BE VERY SLOW!).")
-    HAILO_AVAILABLE = False
-
+    print("❌ HEF file not found. Attempting auto-download...")
+    if not download_hef():
+        print("=" * 60)
+        print("CRITICAL: Could not find or download HEF file!")
+        print("")
+        print("MANUAL DOWNLOAD - Run this command:")
+        print("  wget -O " + HEF_MODEL + " \\")
+        print("    https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef")
+        print("")
+        print("OR check Hailo's example models:")
+        print("  ls /usr/share/hailo-models/")
+        print("=" * 60)
+        print("Falling back to CPU inference (WILL BE VERY SLOW!).")
+        HAILO_AVAILABLE = False
 
 # -----------------------------
 # Model setup
 # -----------------------------
+target = None  # Initialize target to None
+
 if HAILO_AVAILABLE and os.path.isfile(HEF_MODEL):
     try:
-        # Load the pre-compiled HEF model
         hef = HEF(HEF_MODEL)
-        
-        # Create virtual device parameters
         params = VDevice.create_params()
         target = VDevice(params)
-        
-        # TODO: If you get errors here, check that:
-        #   1. Hailo-8L is detected: hailortcli fw-control identify
-        #   2. PCIe driver is loaded: lsmod | grep hailo
-        #   3. Device exists: ls /dev/hailo*
-        
-        # Configure for PCIe interface (Raspberry Pi 5 AI Kit uses PCIe)
         configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
         network_group = target.configure(hef, configure_params)[0]
         network_group_params = network_group.create_params()
-        
-        # Get model input dimensions from the HEF
         input_info = network_group.get_input_vstream_infos()[0]
-        global INPUT_HEIGHT, INPUT_WIDTH
         INPUT_HEIGHT = input_info.shape[1]
         INPUT_WIDTH = input_info.shape[2]
-        
         print(f"✅ HEF loaded successfully. Input shape: ({INPUT_HEIGHT}, {INPUT_WIDTH})")
     except Exception as e:
         print(f"❌ Failed to load HEF or configure Hailo: {e}")
-        print("   Check: hailortcli fw-control identify")
         print("Falling back to CPU.")
         HAILO_AVAILABLE = False
         from ultralytics import YOLO
         model = YOLO(PT_MODEL)
         target = None
-else:
-    # CPU Fallback setup - WARNING: This will be VERY slow on Raspberry Pi!
+
+if not HAILO_AVAILABLE:
     print("⚠️ Setting up CPU inference (Ultralytics YOLO).")
     print("   WARNING: CPU inference on Pi 5 is ~1-2 FPS. Get a HEF file for ~30+ FPS!")
-    from ultralytics import YOLO
-    model = YOLO(PT_MODEL)
-    target = None
+    try:
+        from ultralytics import YOLO
+        model = YOLO(PT_MODEL)
+    except Exception as e:
+        print(f"❌ Failed to load YOLO model: {e}")
+        print("   Make sure yolov8n.pt exists or run: pip install ultralytics")
+        sys.exit(1)
 
 # -----------------------------
 # Vehicle classes (using COCO subset)
@@ -359,8 +397,8 @@ def run_inference(frame):
 # Camera threads
 # -----------------------------
 def camera_reader(cap, queue, cam_name):
-    global stop_threads
-    while not stop_threads:
+    global stop_threads, shutdown_requested
+    while not stop_threads and not shutdown_requested:
         try:
             ret, frame = cap.read()
             if ret:
@@ -398,115 +436,131 @@ for i, cam in enumerate(cameras):
     caps.append(cap)
 
 # -----------------------------
-# Display window and main loop
+# Display window setup (with error handling)
 # -----------------------------
+display_available = False
 try:
     cv2.namedWindow("Vehicle Detection", cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty("Vehicle Detection", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    display_available = True
+    print("✅ Display window created")
 except Exception as e:
-    print(f"⚠️ Warning: Could not set up display window (possible Qt/Wayland plugin issue). Display will use default settings: {e}")
-    # Proceed, but expect the window to open in default mode or fail to open if X server is not running
+    print(f"⚠️ Cannot create display window: {e}")
+    print("   Running in headless mode (no display)")
 
 last_frames = [None for _ in cameras]
 
 print("🚀 Starting vehicle detection...")
+print("   Press 'q' to quit (or Ctrl+C)")
 
 # -----------------------------
-# Main loop with GitHub push
+# Main loop with proper error handling
 # -----------------------------
-while True:
-    frames = []
-    current_time = time.time()
-    
-    # Process each camera stream
-    for i, cam in enumerate(cameras):
-        # Get frame from queue (non-blocking)
-        try:
-            frame = frame_queues[i].get_nowait()
-            last_frames[i] = frame.copy()
-        except:
-            # If queue is empty, use the last good frame
-            frame = last_frames[i]
+try:
+    while not shutdown_requested:
+        frames = []
+        current_time = time.time()
+        
+        for i, cam in enumerate(cameras):
+            try:
+                frame = frame_queues[i].get_nowait()
+                last_frames[i] = frame.copy()
+            except:
+                frame = last_frames[i]
 
-        if frame is None:
-            # Display "No Signal" placeholder
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, f"No Signal - {cam['name']}", (80, 240),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        else:
-            # Run Inference
-            detections = run_inference(frame)
-            
-            # Draw bounding boxes
-            for det in detections:
-                x1, y1, x2, y2 = det['bbox']
-                conf = det['conf']
-                label = vehicle_classes.get(det['class_id'], "Unknown")
-                
-                # Draw the box and label
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1-10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-            
-            # Display camera name
-            cv2.putText(frame, cam['name'], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-            
-            # -----------------------------
-            # GitHub Push Logic
-            # -----------------------------
-            # Push detection results to GitHub if enabled and enough time has passed
-            if (ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE and 
-                len(detections) >= MIN_DETECTIONS_TO_SAVE and
-                (current_time - last_push_time) >= PUSH_INTERVAL_SECONDS):
-                
-                # Save frame with detections drawn
-                frame_to_save = frame.copy() if SAVE_DETECTION_IMAGES else None
-                
-                # Push in a separate thread to avoid blocking the main loop
-                push_thread = threading.Thread(
-                    target=push_detection_event,
-                    args=(PROJECT_DIR, detections, cam['name'], frame_to_save, True),
-                    daemon=True
-                )
-                push_thread.start()
-                last_push_time = current_time
+            if frame is None:
+                frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(frame, f"No Signal - {cam['name']}", (80, 240),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            else:
+                try:
+                    detections = run_inference(frame)
+                    
+                    for det in detections:
+                        x1, y1, x2, y2 = det['bbox']
+                        conf = det['conf']
+                        label = vehicle_classes.get(det['class_id'], "Unknown")
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1-10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    
+                    cv2.putText(frame, cam['name'], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    
+                    # GitHub Push Logic
+                    if (ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE and 
+                        len(detections) >= MIN_DETECTIONS_TO_SAVE and
+                        (current_time - last_push_time) >= PUSH_INTERVAL_SECONDS):
+                        
+                        frame_to_save = frame.copy() if SAVE_DETECTION_IMAGES else None
+                        push_thread = threading.Thread(
+                            target=push_detection_event,
+                            args=(PROJECT_DIR, detections, cam['name'], frame_to_save, True),
+                            daemon=True
+                        )
+                        push_thread.start()
+                        last_push_time = current_time
+                except Exception as e:
+                    print(f"⚠️ Processing error: {e}")
 
-        frames.append(frame)
+            frames.append(frame)
 
-    # Combine frames and display
-    if frames and all(f is not None for f in frames):
-        try:
-            # Standardize height before combining
-            target_h = 480
-            resized = [cv2.resize(f, (int(f.shape[1]*target_h/f.shape[0]), target_h)) for f in frames]
-            combined = cv2.hconcat(resized)
-            cv2.imshow("Vehicle Detection", combined)
-        except Exception as e:
-            # Catch errors if frames are corrupted or resizing fails
-            # This is typically where the original SegFault was happening during CPU fallback,
-            # but is now less likely on the Hailo path.
-            print(f"⚠️ Display error (frame processing failed): {e}")
+        # Display only if available
+        if display_available and frames and all(f is not None for f in frames):
+            try:
+                target_h = 480
+                resized = [cv2.resize(f, (int(f.shape[1]*target_h/f.shape[0]), target_h)) for f in frames]
+                combined = cv2.hconcat(resized)
+                cv2.imshow("Vehicle Detection", combined)
+            except Exception as e:
+                print(f"⚠️ Display error: {e}")
+                display_available = False
 
+        # Check for quit key
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            print("👋 Quit requested...")
+            break
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+except KeyboardInterrupt:
+    print("\n⚠️ Interrupted by user")
+except Exception as e:
+    print(f"❌ Main loop error: {e}")
 
 # -----------------------------
-# Cleanup with final push
+# Cleanup (careful order to avoid segfault)
 # -----------------------------
+print("🧹 Cleaning up...")
+
 stop_threads = True
+shutdown_requested = True
 
-# Final push of any remaining results
+# Wait for threads to finish
+time.sleep(0.5)
+
+# Release cameras first
+for cap in caps:
+    try:
+        if cap.isOpened():
+            cap.release()
+    except:
+        pass
+
+# Destroy OpenCV windows
+try:
+    cv2.destroyAllWindows()
+    cv2.waitKey(1)  # Required to actually close windows
+except:
+    pass
+
+# Final push
 if ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE:
     print("📤 Final push to GitHub...")
-    push_to_github(PROJECT_DIR, "Final detection results - session ended")
+    try:
+        push_to_github(PROJECT_DIR, "Final detection results - session ended")
+    except Exception as e:
+        print(f"⚠️ Final push failed: {e}")
 
-for cap in caps:
-    if cap.isOpened():
-        cap.release()
-cv2.destroyAllWindows()
-
-if HAILO_AVAILABLE and target:
+# Release Hailo last
+if target is not None:
     try:
         target.release()
     except Exception as e:
