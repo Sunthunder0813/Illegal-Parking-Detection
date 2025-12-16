@@ -1,0 +1,29 @@
+(vehicle-env) set-admin@raspberrypi:~/Illegal-Parking-Detection $ python sample.py
+✅ Git configured for Sunthunder0813
+✅ GitHub push enabled
+✅ Hailo platform detected
+❌ HEF file not found.
+============================================================
+CRITICAL: You need to provide a .hef file!
+
+EASIEST OPTION - Download from Hailo Model Zoo:
+  1. Visit: https://github.com/hailo-ai/hailo_model_zoo
+  2. Download yolov8n HEF for hailo8l
+  3. Copy to: /home/set-admin/Illegal-Parking-Detection/yolov8n.hef
+
+OR use Hailo's example models:
+  ls /usr/share/hailo-models/
+============================================================
+Falling back to CPU inference (WILL BE VERY SLOW!).
+⚠️ Setting up CPU inference (Ultralytics YOLO).
+   WARNING: CPU inference on Pi 5 is ~1-2 FPS. Get a HEF file for ~30+ FPS!
+✅ Connected to Camera 1
+[hevc @ 0x1b91be20] Could not find ref with POC 0
+✅ Connected to Camera 2
+[hevc @ 0x1b838450] Could not find ref with POC 1
+qt.qpa.plugin: Could not find the Qt platform plugin "wayland" in "/home/set-admin/vehicle-env/lib/python3.13/site-packages/cv2/qt/plugins"
+🚀 Starting vehicle detection...
+📤 Final push to GitHub...
+ℹ️ No changes to commit
+👋 Cleanup complete
+Segmentation fault
