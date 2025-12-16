@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # Raspberry Pi 5 + Hailo-8L
 # Vehicle detection with multi-camera support
+# Safe CPU fallback if Hailo not available
 
+import os
 import cv2
 import numpy as np
 import threading
@@ -12,12 +14,12 @@ import time
 # -----------------------------
 # Check Hailo
 # -----------------------------
+HAILO_AVAILABLE = False
 try:
     from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
     HAILO_AVAILABLE = True
     print("✅ Hailo platform detected")
 except ImportError:
-    HAILO_AVAILABLE = False
     print("⚠️ Hailo not available, using CPU fallback")
     from ultralytics import YOLO
 
@@ -25,18 +27,28 @@ except ImportError:
 # Model setup
 # -----------------------------
 if HAILO_AVAILABLE:
-    HEF_PATH = "yolov8n.hef"  # <-- Replace with your compiled HEF
-    try:
-        hef = HEF(HEF_PATH)
-    except Exception as e:
-        print(f"❌ Failed to load HEF: {e}")
-        sys.exit(1)
-
-    params = VDevice.create_params()
-    target = VDevice(params)
-    configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
-    network_group = target.configure(hef, configure_params)[0]
-    network_group_params = network_group.create_params()
+    HEF_PATH = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
+    if not os.path.isfile(HEF_PATH):
+        print(f"❌ HEF file not found at {HEF_PATH}, falling back to CPU.")
+        HAILO_AVAILABLE = False
+        from ultralytics import YOLO
+        model = YOLO("yolov8n.pt")
+        target = None
+    else:
+        try:
+            hef = HEF(HEF_PATH)
+            params = VDevice.create_params()
+            target = VDevice(params)
+            configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
+            network_group = target.configure(hef, configure_params)[0]
+            network_group_params = network_group.create_params()
+            print("✅ HEF loaded successfully")
+        except Exception as e:
+            print(f"❌ Failed to load HEF: {e}")
+            HAILO_AVAILABLE = False
+            from ultralytics import YOLO
+            model = YOLO("yolov8n.pt")
+            target = None
 else:
     model = YOLO("yolov8n.pt")
     target = None
@@ -62,7 +74,7 @@ cameras = [
     {"ip": "192.168.18.71", "name": "Camera 2"}
 ]
 
-frame_queues = [Queue(maxsize=2) for _ in cameras]
+frame_queues = [Queue(maxsize=1) for _ in cameras]
 stop_threads = False
 
 # -----------------------------
@@ -107,39 +119,47 @@ def run_hailo_inference(frame):
     return postprocess_results(raw_output, frame.shape)
 
 def run_inference(frame):
-    if HAILO_AVAILABLE:
-        return run_hailo_inference(frame)
-    else:
-        results = model(frame, verbose=False)
-        detections = []
-        for result in results:
-            for box in result.boxes:
-                cls_id = int(box.cls[0])
-                if cls_id in vehicle_classes:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    detections.append({
-                        'bbox': (x1, y1, x2, y2),
-                        'conf': float(box.conf[0]),
-                        'class_id': cls_id
-                    })
-        return detections
+    try:
+        if HAILO_AVAILABLE:
+            return run_hailo_inference(frame)
+        else:
+            results = model(frame, verbose=False)
+            detections = []
+            for result in results:
+                for box in result.boxes:
+                    cls_id = int(box.cls[0])
+                    if cls_id in vehicle_classes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        detections.append({
+                            'bbox': (x1, y1, x2, y2),
+                            'conf': float(box.conf[0]),
+                            'class_id': cls_id
+                        })
+            return detections
+    except Exception as e:
+        print(f"⚠️ Inference failed: {e}")
+        return []
 
 # -----------------------------
 # Camera threads
 # -----------------------------
-def camera_reader(cap, queue):
+def camera_reader(cap, queue, cam_name):
     global stop_threads
     while not stop_threads:
-        ret, frame = cap.read()
-        if ret:
-            if queue.full():
-                try:
-                    queue.get_nowait()
-                except:
-                    pass
-            queue.put(frame)
-        else:
-            time.sleep(0.05)
+        try:
+            ret, frame = cap.read()
+            if ret:
+                if queue.full():
+                    try:
+                        queue.get_nowait()
+                    except:
+                        pass
+                queue.put(frame)
+            else:
+                time.sleep(0.05)
+        except Exception as e:
+            print(f"⚠️ Camera {cam_name} read error: {e}")
+            time.sleep(0.1)
 
 caps = []
 threads = []
@@ -147,12 +167,12 @@ for i, cam in enumerate(cameras):
     rtsp_url = f"rtsp://{username}:{password}@{cam['ip']}:554/h264"
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    cap.set(cv2.CAP_PROP_FPS, 30)
+    cap.set(cv2.CAP_PROP_FPS, 15)  # lower FPS to reduce load
     if not cap.isOpened():
         print(f"❌ Cannot connect to {cam['name']}")
     else:
         print(f"✅ Connected to {cam['name']}")
-        t = threading.Thread(target=camera_reader, args=(cap, frame_queues[i]), daemon=True)
+        t = threading.Thread(target=camera_reader, args=(cap, frame_queues[i], cam['name']), daemon=True)
         t.start()
         threads.append(t)
     caps.append(cap)
@@ -193,7 +213,7 @@ while True:
         frames.append(frame)
 
     # Combine frames horizontally
-    target_h = 720
+    target_h = 480
     resized = []
     for f in frames:
         h, w = f.shape[:2]
