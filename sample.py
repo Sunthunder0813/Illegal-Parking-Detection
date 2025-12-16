@@ -2,6 +2,87 @@
 # Raspberry Pi 5 + Hailo-8L
 # Vehicle detection with multi-camera support
 
+# =============================================================================
+# WHAT YOU NEED TO DO (Raspberry Pi 5 + Hailo AI Kit Setup)
+# =============================================================================
+#
+# STEP 1: INSTALL HAILO SOFTWARE ON RASPBERRY PI 5
+# ------------------------------------------------
+# Run these commands on your Raspberry Pi 5:
+#
+#   sudo apt update
+#   sudo apt install hailo-all
+#
+# This installs:
+#   - hailo-firmware (NPU firmware)
+#   - hailo-pcie-driver (PCIe driver for Hailo-8L)
+#   - hailo-tappas-core (runtime libraries)
+#   - hailort (Hailo runtime)
+#
+# After installation, REBOOT your Pi:
+#   sudo reboot
+#
+# STEP 2: VERIFY HAILO IS DETECTED
+# --------------------------------
+# Run this command to check if Hailo-8L is detected:
+#
+#   hailortcli fw-control identify
+#
+# You should see output like:
+#   "Device: Hailo-8L, Firmware Version: X.X.X"
+#
+# If not detected, check:
+#   - AI Kit is properly seated on the Pi
+#   - PCIe is enabled in /boot/config.txt
+#
+# STEP 3: GET THE HEF FILE (CRITICAL!)
+# ------------------------------------
+# The .hef file CANNOT be created on the Raspberry Pi!
+# You have TWO options:
+#
+# OPTION A: Download pre-compiled HEF from Hailo Model Zoo (EASIEST)
+#   1. Go to: https://github.com/hailo-ai/hailo_model_zoo/releases
+#   2. Download yolov8n.hef for hailo8l
+#   3. Or use hailo_model_zoo CLI:
+#      pip install hailo_model_zoo
+#      hailomz compile yolov8n --hw-arch hailo8l --har /path/to/save
+#
+# OPTION B: Compile yourself on x86 Ubuntu machine
+#   1. Get an x86 Ubuntu 20.04/22.04 machine
+#   2. Install Hailo Dataflow Compiler (DFC) from developer.hailo.ai
+#   3. Transfer your yolov8n.onnx to that machine
+#   4. Run:
+#      hailo parser onnx yolov8n.onnx --hw-arch hailo8l
+#      hailo optimize yolov8n.har
+#      hailo compiler yolov8n.har --hw-arch hailo8l
+#   5. Transfer resulting yolov8n.hef back to your Pi
+#
+# STEP 4: PLACE THE HEF FILE
+# --------------------------
+# Copy the .hef file to:
+#   /home/set-admin/Illegal-Parking-Detection/yolov8n.hef
+#
+# STEP 5: INSTALL PYTHON DEPENDENCIES
+# -----------------------------------
+# On your Raspberry Pi 5:
+#
+#   pip install opencv-python numpy
+#   pip install hailo-platform  # Should be installed with hailo-all
+#
+# STEP 6: CONNECT YOUR CAMERAS
+# ----------------------------
+# Update the camera IPs below to match your RTSP cameras
+# Test camera connection first with:
+#   ffplay rtsp://admin:password@192.168.18.2:554/h264
+#
+# STEP 7: RUN THE SCRIPT
+# ----------------------
+#   python sample.py
+#
+# Press 'q' to quit
+#
+# =============================================================================
+
 import os
 import cv2
 import numpy as np
@@ -14,32 +95,35 @@ import subprocess
 # -----------------------------
 # Check Hailo Platform
 # -----------------------------
+# TODO: If this import fails, you need to install hailo-all package (see STEP 1 above)
 HAILO_AVAILABLE = False
 try:
-    # We only need the hailo_platform library for inference on the Pi
     from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
     HAILO_AVAILABLE = True
     print("✅ Hailo platform detected")
 except ImportError:
     print("⚠️ Hailo platform library (hailo_platform) not found.")
-    # Fallback uses Ultralytics YOLO library
+    print("   RUN: sudo apt install hailo-all && sudo reboot")
+    # Fallback uses Ultralytics YOLO library (CPU - VERY SLOW on Pi!)
     from ultralytics import YOLO
 
 # -----------------------------
 # Paths
 # -----------------------------
+# TODO: Make sure these paths exist on your Raspberry Pi
 PT_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.pt"
 ONNX_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.onnx"
-HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
+HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"  # <-- YOU MUST PROVIDE THIS FILE!
 
 # -----------------------------
 # Export PT -> ONNX if missing
 # -----------------------------
+# NOTE: This step is only needed if you're compiling the HEF yourself
+# The ONNX file is an intermediate format, NOT used by Hailo directly
 if not os.path.isfile(ONNX_MODEL):
     print("⚠️ ONNX model not found, exporting from PT...")
     try:
         from ultralytics import YOLO
-        # Exporting with dynamic=True might be better for compatibility, but check Hailo documentation.
         model = YOLO(PT_MODEL)
         model.export(format="onnx", imgsz=640, dynamic=False)
         print(f"✅ Exported ONNX model: {ONNX_MODEL}")
@@ -50,13 +134,23 @@ if not os.path.isfile(ONNX_MODEL):
 # -----------------------------
 # Check for HEF (Model must be pre-compiled on x86 machine)
 # -----------------------------
+# TODO: THIS IS THE MOST IMPORTANT STEP!
+# You MUST have a .hef file to use Hailo acceleration
+# See STEP 3 above for how to get it
 if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
     print("❌ HEF file not found.")
-    print("--- CRITICAL ERROR ---")
-    print("The Hailo Executable Format (.hef) file must be pre-compiled on an x86 Ubuntu machine.")
-    print(f"Please compile {ONNX_MODEL} using the Hailo Dataflow Compiler (DFC) and transfer the resulting HEF file to:")
-    print(f"-> {HEF_MODEL}")
-    print("Falling back to CPU inference.")
+    print("=" * 60)
+    print("CRITICAL: You need to provide a .hef file!")
+    print("")
+    print("EASIEST OPTION - Download from Hailo Model Zoo:")
+    print("  1. Visit: https://github.com/hailo-ai/hailo_model_zoo")
+    print("  2. Download yolov8n HEF for hailo8l")
+    print("  3. Copy to: " + HEF_MODEL)
+    print("")
+    print("OR use Hailo's example models:")
+    print("  ls /usr/share/hailo-models/")
+    print("=" * 60)
+    print("Falling back to CPU inference (WILL BE VERY SLOW!).")
     HAILO_AVAILABLE = False
 
 
@@ -65,15 +159,24 @@ if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
 # -----------------------------
 if HAILO_AVAILABLE and os.path.isfile(HEF_MODEL):
     try:
+        # Load the pre-compiled HEF model
         hef = HEF(HEF_MODEL)
+        
+        # Create virtual device parameters
         params = VDevice.create_params()
         target = VDevice(params)
-        # Assuming PCIe interface for Raspberry Pi 5 AI Kit
+        
+        # TODO: If you get errors here, check that:
+        #   1. Hailo-8L is detected: hailortcli fw-control identify
+        #   2. PCIe driver is loaded: lsmod | grep hailo
+        #   3. Device exists: ls /dev/hailo*
+        
+        # Configure for PCIe interface (Raspberry Pi 5 AI Kit uses PCIe)
         configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
         network_group = target.configure(hef, configure_params)[0]
         network_group_params = network_group.create_params()
         
-        # Determine model input/output info (Crucial for preprocessing)
+        # Get model input dimensions from the HEF
         input_info = network_group.get_input_vstream_infos()[0]
         global INPUT_HEIGHT, INPUT_WIDTH
         INPUT_HEIGHT = input_info.shape[1]
@@ -82,14 +185,16 @@ if HAILO_AVAILABLE and os.path.isfile(HEF_MODEL):
         print(f"✅ HEF loaded successfully. Input shape: ({INPUT_HEIGHT}, {INPUT_WIDTH})")
     except Exception as e:
         print(f"❌ Failed to load HEF or configure Hailo: {e}")
+        print("   Check: hailortcli fw-control identify")
         print("Falling back to CPU.")
         HAILO_AVAILABLE = False
         from ultralytics import YOLO
         model = YOLO(PT_MODEL)
         target = None
 else:
-    # CPU Fallback setup
+    # CPU Fallback setup - WARNING: This will be VERY slow on Raspberry Pi!
     print("⚠️ Setting up CPU inference (Ultralytics YOLO).")
+    print("   WARNING: CPU inference on Pi 5 is ~1-2 FPS. Get a HEF file for ~30+ FPS!")
     from ultralytics import YOLO
     model = YOLO(PT_MODEL)
     target = None
@@ -109,12 +214,15 @@ vehicle_classes = {
 # -----------------------------
 # Camera info (using placeholders from original script)
 # -----------------------------
-username = "admin"
-password = ""
+# TODO: UPDATE THESE VALUES FOR YOUR CAMERAS!
+username = "admin"          # <-- Change to your camera's username
+password = ""               # <-- Change to your camera's password
 cameras = [
-    {"ip": "192.168.18.2", "name": "Camera 1"},
-    {"ip": "192.168.18.71", "name": "Camera 2"}
+    {"ip": "192.168.18.2", "name": "Camera 1"},   # <-- Update IP addresses
+    {"ip": "192.168.18.71", "name": "Camera 2"}   # <-- Update IP addresses
 ]
+# NOTE: Test your camera URLs first with:
+#   ffplay "rtsp://admin:password@192.168.18.2:554/h264"
 
 frame_queues = [Queue(maxsize=1) for _ in cameras]
 stop_threads = False
@@ -139,27 +247,20 @@ def preprocess_frame(frame):
     return input_data
 
 def postprocess_results(output, frame_shape, conf_threshold=0.5):
-    # NOTE: This postprocessing logic is for a generic raw Hailo output (like a transposed YOLO output)
-    # The actual HEF output format can vary. You may need to customize this based on the HEF's configuration.
+    # TODO: This postprocessing may need adjustment based on your specific HEF!
+    # Different HEF compilations can have different output formats.
+    # If detections aren't working, you may need to:
+    #   1. Check the HEF output format with: hailortcli parse-hef yolov8n.hef
+    #   2. Adjust this function to match the output tensor layout
     detections = []
     h, w = frame_shape[:2]
-    # The output is expected to be (N, 84, 8400) or similar, then transposed or already flattened.
-    # Assuming output is a list/array of [x_center, y_center, width, height, conf, class_id] per box,
-    # and coordinates are normalized (0-1).
-    
-    # If the output is the raw transposed YOLO (84 classes, N boxes), it needs proper handling.
-    # Assuming the output tensor is already post-processed or is formatted for easy parsing:
     
     for detection in output:
-        # Check if the detection array has at least 6 elements (x, y, w, h, conf, cls)
         if len(detection) >= 6:
-            # Scale coordinates and check confidence
             x_center, y_center, width, height, conf, cls_id = detection[:6]
             
-            # The class_id from the raw tensor might be a float index, convert and check against known classes
             cls_id_int = int(cls_id)
             if conf > conf_threshold and cls_id_int in vehicle_classes:
-                # Convert normalized (0-1) box center/width/height to absolute pixel values
                 x1 = int((x_center - width / 2) * w)
                 y1 = int((y_center - height / 2) * h)
                 x2 = int((x_center + width / 2) * w)
