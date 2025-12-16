@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Raspberry Pi 5 + Hailo-8L
 # Vehicle detection with multi-camera support
-# Safe CPU fallback if Hailo not available
+# Auto-export PT -> ONNX -> HEF if missing
 
 import os
 import cv2
@@ -10,6 +10,7 @@ import threading
 from queue import Queue
 import sys
 import time
+import subprocess
 
 # -----------------------------
 # Check Hailo
@@ -24,33 +25,65 @@ except ImportError:
     from ultralytics import YOLO
 
 # -----------------------------
+# Paths
+# -----------------------------
+PT_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.pt"
+ONNX_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.onnx"
+HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
+
+# -----------------------------
+# Export PT -> ONNX if missing
+# -----------------------------
+if not os.path.isfile(ONNX_MODEL):
+    print("⚠️ ONNX model not found, exporting from PT...")
+    try:
+        from ultralytics import YOLO
+        model = YOLO(PT_MODEL)
+        model.export(format="onnx", dynamic=True)
+        print("✅ Exported ONNX model:", ONNX_MODEL)
+    except Exception as e:
+        print("❌ Failed to export ONNX:", e)
+        sys.exit(1)
+
+# -----------------------------
+# Compile ONNX -> HEF if Hailo available and HEF missing
+# -----------------------------
+if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
+    print("⚠️ HEF file not found, compiling ONNX -> HEF...")
+    try:
+        # Change the hailo_compiler command if needed for your system
+        subprocess.run([
+            "hailo_compiler",
+            "--target", "PCIe",
+            "--batch_size", "1",
+            ONNX_MODEL,
+            "-o", HEF_MODEL
+        ], check=True)
+        print("✅ HEF compiled:", HEF_MODEL)
+    except subprocess.CalledProcessError as e:
+        print("❌ Failed to compile HEF:", e)
+        HAILO_AVAILABLE = False
+
+# -----------------------------
 # Model setup
 # -----------------------------
 if HAILO_AVAILABLE:
-    HEF_PATH = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
-    if not os.path.isfile(HEF_PATH):
-        print(f"❌ HEF file not found at {HEF_PATH}, falling back to CPU.")
+    try:
+        hef = HEF(HEF_MODEL)
+        params = VDevice.create_params()
+        target = VDevice(params)
+        configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
+        network_group = target.configure(hef, configure_params)[0]
+        network_group_params = network_group.create_params()
+        print("✅ HEF loaded successfully")
+    except Exception as e:
+        print(f"❌ Failed to load HEF: {e}, falling back to CPU")
         HAILO_AVAILABLE = False
         from ultralytics import YOLO
-        model = YOLO("yolov8n.pt")
+        model = YOLO(PT_MODEL)
         target = None
-    else:
-        try:
-            hef = HEF(HEF_PATH)
-            params = VDevice.create_params()
-            target = VDevice(params)
-            configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
-            network_group = target.configure(hef, configure_params)[0]
-            network_group_params = network_group.create_params()
-            print("✅ HEF loaded successfully")
-        except Exception as e:
-            print(f"❌ Failed to load HEF: {e}")
-            HAILO_AVAILABLE = False
-            from ultralytics import YOLO
-            model = YOLO("yolov8n.pt")
-            target = None
 else:
-    model = YOLO("yolov8n.pt")
+    model = YOLO(PT_MODEL)
     target = None
 
 # -----------------------------
@@ -167,7 +200,7 @@ for i, cam in enumerate(cameras):
     rtsp_url = f"rtsp://{username}:{password}@{cam['ip']}:554/h264"
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    cap.set(cv2.CAP_PROP_FPS, 15)  # lower FPS to reduce load
+    cap.set(cv2.CAP_PROP_FPS, 15)
     if not cap.isOpened():
         print(f"❌ Cannot connect to {cam['name']}")
     else:
