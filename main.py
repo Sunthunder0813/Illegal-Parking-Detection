@@ -120,7 +120,6 @@ while True:
     
     combined = cv2.hconcat(resized_frames)
     cv2.imshow("IP Camera Stream", combined)
-    
 
     # Press 'q' to quit
     if cv2.waitKey(1) & 0xFF == ord('q'):
