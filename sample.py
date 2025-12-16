@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Raspberry Pi 5 + Hailo-8L
 # Vehicle detection with multi-camera support
-# Auto-export PT -> ONNX -> HEF if missing
+# CPU fallback if Hailo or HEF is missing
 
 import os
 import cv2
@@ -49,9 +49,8 @@ if not os.path.isfile(ONNX_MODEL):
 # Compile ONNX -> HEF if Hailo available and HEF missing
 # -----------------------------
 if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
-    print("⚠️ HEF file not found, compiling ONNX -> HEF...")
+    print("⚠️ HEF file not found.")
     try:
-        # Change the hailo_compiler command if needed for your system
         subprocess.run([
             "hailo_compiler",
             "--target", "PCIe",
@@ -60,6 +59,9 @@ if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
             "-o", HEF_MODEL
         ], check=True)
         print("✅ HEF compiled:", HEF_MODEL)
+    except FileNotFoundError:
+        print("⚠️ 'hailo_compiler' not found. Falling back to CPU.")
+        HAILO_AVAILABLE = False
     except subprocess.CalledProcessError as e:
         print("❌ Failed to compile HEF:", e)
         HAILO_AVAILABLE = False
@@ -67,7 +69,7 @@ if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
 # -----------------------------
 # Model setup
 # -----------------------------
-if HAILO_AVAILABLE:
+if HAILO_AVAILABLE and os.path.isfile(HEF_MODEL):
     try:
         hef = HEF(HEF_MODEL)
         params = VDevice.create_params()
@@ -83,6 +85,7 @@ if HAILO_AVAILABLE:
         model = YOLO(PT_MODEL)
         target = None
 else:
+    from ultralytics import YOLO
     model = YOLO(PT_MODEL)
     target = None
 
@@ -126,7 +129,6 @@ def preprocess_frame(frame):
 def postprocess_results(output, frame_shape, conf_threshold=0.5):
     detections = []
     h, w = frame_shape[:2]
-
     for detection in output:
         if len(detection) >= 6:
             x_center, y_center, width, height, conf, cls_id = detection[:6]
@@ -135,11 +137,7 @@ def postprocess_results(output, frame_shape, conf_threshold=0.5):
                 y1 = int((y_center - height / 2) * h)
                 x2 = int((x_center + width / 2) * w)
                 y2 = int((y_center + height / 2) * h)
-                detections.append({
-                    'bbox': (x1, y1, x2, y2),
-                    'conf': conf,
-                    'class_id': int(cls_id)
-                })
+                detections.append({'bbox': (x1, y1, x2, y2), 'conf': conf, 'class_id': int(cls_id)})
     return detections
 
 def run_hailo_inference(frame):
@@ -163,11 +161,7 @@ def run_inference(frame):
                     cls_id = int(box.cls[0])
                     if cls_id in vehicle_classes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        detections.append({
-                            'bbox': (x1, y1, x2, y2),
-                            'conf': float(box.conf[0]),
-                            'class_id': cls_id
-                        })
+                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id})
             return detections
     except Exception as e:
         print(f"⚠️ Inference failed: {e}")
@@ -183,10 +177,8 @@ def camera_reader(cap, queue, cam_name):
             ret, frame = cap.read()
             if ret:
                 if queue.full():
-                    try:
-                        queue.get_nowait()
-                    except:
-                        pass
+                    try: queue.get_nowait()
+                    except: pass
                 queue.put(frame)
             else:
                 time.sleep(0.05)
@@ -247,10 +239,7 @@ while True:
 
     # Combine frames horizontally
     target_h = 480
-    resized = []
-    for f in frames:
-        h, w = f.shape[:2]
-        resized.append(cv2.resize(f, (int(w*target_h/h), target_h)))
+    resized = [cv2.resize(f, (int(f.shape[1]*target_h/f.shape[0]), target_h)) for f in frames]
     combined = cv2.hconcat(resized)
     cv2.imshow("Vehicle Detection", combined)
 
@@ -261,6 +250,6 @@ stop_threads = True
 for cap in caps:
     cap.release()
 cv2.destroyAllWindows()
-if target:
+if HAILO_AVAILABLE and target:
     target.release()
 print("👋 Cleanup complete")
