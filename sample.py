@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Vehicle detection with multi-camera support using HAILO TAPPAS
+# Vehicle detection with multi-camera support using HAILO TAPPAS and GStreamer callbacks
 
 import os
 import cv2
@@ -8,7 +8,6 @@ import threading
 from queue import Queue
 import sys
 import time
-import subprocess
 import signal
 
 # -----------------------------
@@ -25,7 +24,7 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 # -----------------------------
-# GitHub Push Configuration (unchanged)
+# GitHub Push Configuration
 # -----------------------------
 ENABLE_GITHUB_PUSH = True
 PUSH_INTERVAL_SECONDS = 60
@@ -59,17 +58,20 @@ except ImportError:
     sys.exit(1)
 
 # -----------------------------
+# GStreamer callback import
+# -----------------------------
+from hailo_apps.hailo_app_python.core.gstreamer.gstreamer_app import app_callback_class, run_pipeline
+
+# -----------------------------
 # Paths
 # -----------------------------
 HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
-
 if not os.path.isfile(HEF_MODEL):
     print(f"❌ HEF file not found at {HEF_MODEL}")
-    print("Download it from Hailo Model Zoo or copy from /usr/share/hailo-models/")
     sys.exit(1)
 
 # -----------------------------
-# Camera info (update as needed)
+# Camera info
 # -----------------------------
 username = "admin"
 password = ""
@@ -78,7 +80,6 @@ cameras = [
     {"ip": "192.168.18.71", "name": "Camera 2"}
 ]
 frame_queues = [Queue(maxsize=1) for _ in cameras]
-stop_threads = False
 
 # -----------------------------
 # COCO class names (80 classes)
@@ -94,46 +95,39 @@ COCO_CLASS_NAMES = [
     "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
     "hair drier", "toothbrush"
 ]
+
 # Only show these classes
 detected_classes = {0: "Person", 1: "Bicycle", 2: "Car", 3: "Motorcycle", 5: "Bus", 7: "Truck"}
 
 # -----------------------------
-# Camera threads
+# Hailo GStreamer callback class
 # -----------------------------
-def camera_reader(cap, queue, cam_name):
-    global stop_threads, shutdown_requested
-    while not stop_threads and not shutdown_requested:
-        try:
-            ret, frame = cap.read()
-            if ret:
-                if queue.full():
-                    try: queue.get_nowait()
-                    except: pass
-                queue.put(frame)
-            else:
-                time.sleep(0.05)
-        except Exception as e:
-            print(f"⚠️ Camera {cam_name} read error: {e}")
-            time.sleep(0.1)
+class HailoFrameCallback(app_callback_class):
+    def __init__(self, queue, cam_name):
+        super().__init__()
+        self.queue = queue
+        self.cam_name = cam_name
 
-caps = []
-threads = []
+    def on_new_frame(self, frame):
+        if self.queue.full():
+            try:
+                self.queue.get_nowait()
+            except:
+                pass
+        self.queue.put(frame)
+        return True  # continue pipeline
+
+# -----------------------------
+# Start camera pipelines
+# -----------------------------
 for i, cam in enumerate(cameras):
-    rtsp_url = f"rtsp://{username}:{password}@{cam['ip']}:554/h264"
-    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    cap.set(cv2.CAP_PROP_FPS, 15)
-    if not cap.isOpened():
-        print(f"❌ Cannot connect to {cam['name']} at {cam['ip']}")
-    else:
-        print(f"✅ Connected to {cam['name']}")
-        t = threading.Thread(target=camera_reader, args=(cap, frame_queues[i], cam['name']), daemon=True)
-        t.start()
-        threads.append(t)
-    caps.append(cap)
+    callback = HailoFrameCallback(frame_queues[i], cam['name'])
+    gst_command = f"rtspsrc location=rtsp://{username}:{password}@{cam['ip']}:554/h264 ! decodebin ! videoconvert ! appsink"
+    run_pipeline(gst_command, callback)
+    print(f"✅ Hailo GStreamer pipeline started for {cam['name']}")
 
 # -----------------------------
-# Hailo TAPPAS YOLOv8 Pipeline Setup
+# Hailo TAPPAS YOLOv8 Pipeline
 # -----------------------------
 try:
     device = Device()
@@ -145,14 +139,10 @@ except Exception as e:
     sys.exit(1)
 
 def run_hailo_tappas_inference(frame):
-    # Resize and convert to RGB as required by TAPPAS
     resized = cv2.resize(frame, (input_width, input_height))
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    # Pipeline expects NHWC uint8
     input_data = np.expand_dims(rgb, axis=0).astype(np.uint8)
-    # Run inference
     results = pipeline.infer(input_data)
-    # results: list of dicts with keys: 'bbox', 'score', 'class'
     detections = []
     for det in results:
         cls_id = int(det['class'])
@@ -163,25 +153,24 @@ def run_hailo_tappas_inference(frame):
     return detections
 
 # -----------------------------
-# Display window setup
+# Display setup
 # -----------------------------
 display_available = False
 try:
     cv2.namedWindow("Vehicle Detection", cv2.WINDOW_NORMAL)
     display_available = True
-    print("✅ Display window created")
 except Exception as e:
     print(f"⚠️ Cannot create display window: {e}")
-    print("   Running in headless mode (no display)")
+    print("   Running in headless mode")
 
 last_frames = [None for _ in cameras]
-
-print("🚀 Starting vehicle detection (HAILO TAPPAS)...")
-print("   Press 'q' to quit (or Ctrl+C)")
 
 # -----------------------------
 # Main loop
 # -----------------------------
+print("🚀 Starting vehicle detection (HAILO TAPPAS + GStreamer)...")
+print("   Press 'q' to quit (or Ctrl+C)")
+
 try:
     while not shutdown_requested:
         frames = []
@@ -192,6 +181,7 @@ try:
                 last_frames[i] = frame.copy()
             except:
                 frame = last_frames[i]
+
             if frame is None:
                 frame = np.zeros((480, 640, 3), dtype=np.uint8)
                 cv2.putText(frame, f"No Signal - {cam['name']}", (80, 240),
@@ -207,7 +197,7 @@ try:
                         cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1-10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     cv2.putText(frame, cam['name'], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                    # GitHub Push Logic
+                    # GitHub push logic
                     if (ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE and 
                         len(detections) >= MIN_DETECTIONS_TO_SAVE and
                         (current_time - last_push_time) >= PUSH_INTERVAL_SECONDS):
@@ -222,7 +212,7 @@ try:
                 except Exception as e:
                     print(f"⚠️ Processing error: {e}")
             frames.append(frame)
-        # Display only if available
+
         if display_available and frames and all(f is not None for f in frames):
             try:
                 target_h = 480
@@ -232,10 +222,12 @@ try:
             except Exception as e:
                 print(f"⚠️ Display error: {e}")
                 display_available = False
+
         key = cv2.waitKey(1) & 0xFF
         if key == ord("q"):
             print("👋 Quit requested...")
             break
+
 except KeyboardInterrupt:
     print("\n⚠️ Interrupted by user")
 except Exception as e:
@@ -245,26 +237,22 @@ except Exception as e:
 # Cleanup
 # -----------------------------
 print("🧹 Cleaning up...")
-stop_threads = True
 shutdown_requested = True
 time.sleep(0.5)
-for cap in caps:
-    try:
-        if cap.isOpened():
-            cap.release()
-    except:
-        pass
+
 try:
     cv2.destroyAllWindows()
     cv2.waitKey(1)
 except:
     pass
+
 if ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE:
     print("📤 Final push to GitHub...")
     try:
         push_to_github(PROJECT_DIR, "Final detection results - session ended")
     except Exception as e:
         print(f"⚠️ Final push failed: {e}")
+
 try:
     pipeline.release()
 except Exception as e:
@@ -273,4 +261,5 @@ try:
     device.release()
 except Exception as e:
     print(f"⚠️ Failed to release Hailo Device: {e}")
+
 print("👋 Cleanup complete")
