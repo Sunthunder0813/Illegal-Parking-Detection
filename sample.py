@@ -9,7 +9,7 @@ from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, Co
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
-HEF_PATH = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
+HEF_PATH = "Illegal-Parking-Detection/yolov8n.hef"
 CAMERAS = [
     {"ip": "192.168.18.2", "name": "Camera 1"},
     {"ip": "192.168.18.71", "name": "Camera 2"}
