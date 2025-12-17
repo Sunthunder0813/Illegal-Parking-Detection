@@ -685,8 +685,16 @@ class HailoDetector:
         # Plate recognizer
         self._plate_recognizer = None
         
+        # Device type tracking
+        self._device_type = "unknown"
+        
         # Initialize
         self._initialize(auto_download)
+    
+    @property
+    def device_type(self) -> str:
+        """Return the device type being used for inference"""
+        return self._device_type
     
     def _initialize(self, auto_download: bool = True):
         """Initialize the appropriate inference backend"""
@@ -701,6 +709,7 @@ class HailoDetector:
                 try:
                     self._init_hailo()
                     self.hailo_available = True
+                    self._device_type = "Hailo-8L"
                     print(f"✅ Hailo-8L initialized successfully")
                     print(f"   Input shape: ({self.input_height}, {self.input_width})")
                     return
@@ -712,6 +721,7 @@ class HailoDetector:
         
         # Fallback to CPU
         self._init_cpu_fallback()
+        self._device_type = "CPU (Ultralytics)"
         
         # Initialize plate recognition
         if self.enable_plate_recognition:

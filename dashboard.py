@@ -138,9 +138,13 @@ class CameraStream:
             
             # Different colors for different object types
             label_lower = det.label.lower()
+            
+            # Get vehicle class names as lowercase for comparison
+            vehicle_names = [v.lower() for v in VEHICLE_CLASSES.values()]
+            
             if label_lower == 'person':
                 color = (255, 0, 255)  # Magenta for persons
-            elif label_lower in [v.lower() for v in VEHICLE_CLASSES]:
+            elif label_lower in vehicle_names:
                 color = (0, 255, 0)  # Green for vehicles
             else:
                 color = (0, 255, 255)  # Yellow for other objects
