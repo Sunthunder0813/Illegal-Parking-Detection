@@ -7,6 +7,14 @@ import numpy as np
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, Response
 
+# Import the detector
+try:
+    from models import HailoDetector, Detection, VEHICLE_CLASSES, ALL_TARGET_CLASSES
+    DETECTOR_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Could not import detector: {e}")
+    DETECTOR_AVAILABLE = False
+
 # Initialize Flask app
 app = Flask(__name__, 
     static_folder="dashboard_static", 
@@ -32,10 +40,36 @@ READ_TIMEOUT_MS = 1000  # 1 second read timeout
 # Camera stream objects
 camera_streams = {}
 
+# Global detector instance
+detector = None
+detector_lock = threading.Lock()
+
+def init_detector():
+    """Initialize the object detector"""
+    global detector
+    if not DETECTOR_AVAILABLE:
+        print("⚠️ Detector not available - running without detection")
+        return False
+    
+    try:
+        print("🔧 Initializing object detector...")
+        detector = HailoDetector(
+            detect_all_objects=True,  # Enable detection of persons, vehicles, objects
+            enable_plate_recognition=True,
+            confidence_threshold=0.4  # Lower threshold to catch more objects
+        )
+        print("✅ Object detector initialized successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to initialize detector: {e}")
+        detector = None
+        return False
+
 class CameraStream:
     def __init__(self, camera_config):
         self.camera = camera_config
         self.frame = None
+        self.frame_with_detections = None  # Frame with detection boxes drawn
         self.running = False
         self.connected = False
         self.lock = threading.Lock()
@@ -52,6 +86,10 @@ class CameraStream:
         self.frames_needed_for_stable = 10  # Need 10 valid frames to be "stable"
         self.is_stabilizing = True  # Flag for stabilization mode
         self.reconnect_cycles = 0  # Track consecutive reconnect cycles
+        
+        # Detection stats
+        self.last_detections = []
+        self.detection_counts = {'Person': 0, 'Vehicle': 0, 'Object': 0}
         
     def get_rtsp_url(self):
         """Generate RTSP URL for the camera"""
@@ -139,6 +177,8 @@ class CameraStream:
             
     def _capture_loop(self):
         """Continuous capture loop - ULTRA FAST reconnection"""
+        global detector
+        
         while self.running:
             # Check frame timeout only if connected AND stable (not in stabilization mode)
             if self.connected and self.last_frame_time and self.last_connect_success:
@@ -179,8 +219,13 @@ class CameraStream:
                     ret, frame = self.cap.retrieve()
                     if ret:
                         frame = cv2.resize(frame, (640, 480))
+                        
+                        # Run detection on frame
+                        frame_with_boxes = self._process_detections(frame)
+                        
                         with self.lock:
                             self.frame = frame
+                            self.frame_with_detections = frame_with_boxes
                             self.last_frame_time = datetime.now()
                             self.frame_timeout = False
                         
@@ -211,6 +256,56 @@ class CameraStream:
         
         if self.cap:
             self.cap.release()
+    
+    def _process_detections(self, frame):
+        """Run object detection on frame and draw bounding boxes"""
+        global detector
+        
+        if detector is None:
+            return frame
+        
+        try:
+            with detector_lock:
+                detections = detector.detect(frame, recognize_plates=True)
+            
+            # Update detection counts
+            counts = {'Person': 0, 'Vehicle': 0, 'Object': 0}
+            for det in detections:
+                if det.label in counts:
+                    counts[det.label] += 1
+            self.detection_counts = counts
+            self.last_detections = detections
+            
+            # Draw detections on frame
+            annotated_frame = detector.draw_detections(
+                frame,
+                detections,
+                show_label=True,
+                show_confidence=True,
+                show_plate=True
+            )
+            
+            # Add detection count overlay
+            y_offset = 25
+            for label, count in counts.items():
+                if count > 0:
+                    text = f"{label}: {count}"
+                    cv2.putText(
+                        annotated_frame,
+                        text,
+                        (10, y_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (255, 255, 255),
+                        2
+                    )
+                    y_offset += 25
+            
+            return annotated_frame
+            
+        except Exception as e:
+            print(f"⚠️ Detection error: {e}")
+            return frame
     
     def _handle_read_failure(self):
         """Handle read failure - with stabilization awareness"""
@@ -243,13 +338,21 @@ class CameraStream:
             self.cap = None
     
     def get_frame(self):
-        """Get current frame as JPEG"""
+        """Get current frame as JPEG - with detections drawn"""
         with self.lock:
-            if self.frame is None or not self.connected:
+            if self.frame_with_detections is None and self.frame is None:
                 placeholder = self._create_placeholder()
                 _, jpeg = cv2.imencode('.jpg', placeholder)
                 return jpeg.tobytes()
-            _, jpeg = cv2.imencode('.jpg', self.frame)
+            
+            # Return frame with detection boxes if available
+            frame_to_send = self.frame_with_detections if self.frame_with_detections is not None else self.frame
+            if frame_to_send is None or not self.connected:
+                placeholder = self._create_placeholder()
+                _, jpeg = cv2.imencode('.jpg', placeholder)
+                return jpeg.tobytes()
+                
+            _, jpeg = cv2.imencode('.jpg', frame_to_send)
             return jpeg.tobytes()
     
     def get_status(self):
@@ -286,7 +389,8 @@ class CameraStream:
             'last_frame': self.last_frame_time.strftime('%H:%M:%S') if self.last_frame_time else None,
             'frame_timeout': frame_timed_out,
             'seconds_since_frame': round(seconds_since, 1) if seconds_since else None,
-            'stabilizing': self.is_stabilizing
+            'stabilizing': self.is_stabilizing,
+            'detections': self.detection_counts  # Include detection counts
         }
     
     def _create_placeholder(self):
@@ -481,6 +585,9 @@ def api_cameras_reconnect_all():
 # ============== MAIN ==============
 
 if __name__ == "__main__":
+    print("🔧 Initializing object detector...")
+    init_detector()
+    
     print("🎥 Initializing cameras...")
     init_cameras()
     

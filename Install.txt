@@ -1,0 +1,29 @@
+# Update system first
+sudo apt update && sudo apt upgrade -y
+
+# Install Python and pip if not already installed
+sudo apt install python3-pip python3-venv -y
+
+# Install OpenCV dependencies
+sudo apt install libopencv-dev python3-opencv -y
+
+
+# Create a virtual environment (recommended)
+cd ~/Illegal-Parking-Detection
+python3 -m venv venv
+source venv/bin/activate
+
+# Install required packages
+pip install flask numpy opencv-python-headless ultralytics
+
+pip install easyocr
+
+sudo apt install tesseract-ocr -y
+pip install pytesseract
+
+# Install Hailo runtime
+sudo apt install hailo-all -y
+sudo reboot
+
+# Verify installation
+hailortcli fw-control identify

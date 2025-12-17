@@ -80,6 +80,42 @@ VEHICLE_CLASSES = {
     7: "Truck"
 }
 
+# Person class
+PERSON_CLASSES = {
+    0: "Person"
+}
+
+# All detectable classes with custom labels
+DETECTION_LABELS = {
+    0: "Person",      # Person -> "Person"
+    2: "Vehicle",     # Car -> "Vehicle"
+    7: "Vehicle",     # Truck -> "Vehicle"
+}
+
+# Classes we want to detect (Person, Car, Truck, and common objects)
+ALL_TARGET_CLASSES = {
+    0: "Person",
+    1: "Object",      # Bicycle
+    2: "Vehicle",     # Car
+    3: "Object",      # Motorcycle
+    5: "Object",      # Bus
+    7: "Vehicle",     # Truck
+    9: "Object",      # Traffic light
+    10: "Object",     # Fire hydrant
+    11: "Object",     # Stop sign
+    13: "Object",      # Bench
+    24: "Object",     # Backpack
+    25: "Object",     # Umbrella
+    26: "Object",     # Handbag
+    28: "Object",     # Suitcase
+    39: "Object",     # Bottle
+    56: "Object",     # Chair
+    57: "Object",     # Couch
+    62: "Object",     # TV
+    63: "Object",     # Laptop
+    67: "Object",     # Cell phone
+}
+
 # Extended vehicle classes (if you want to include more vehicle types)
 EXTENDED_VEHICLE_CLASSES = {
     1: "Bicycle",
@@ -644,7 +680,8 @@ class HailoDetector:
         nms_threshold: float = DEFAULT_NMS_THRESHOLD,
         target_classes: Optional[Dict[int, str]] = None,
         auto_download: bool = True,
-        enable_plate_recognition: bool = True
+        enable_plate_recognition: bool = True,
+        detect_all_objects: bool = False
     ):
         """
         Initialize the detector.
@@ -657,12 +694,22 @@ class HailoDetector:
             target_classes: Dictionary of class_id -> class_name to detect (default: Car, Truck)
             auto_download: Attempt to download HEF if missing
             enable_plate_recognition: Enable Philippine license plate OCR
+            detect_all_objects: If True, detect persons, vehicles, and objects
         """
         self.hef_path = Path(hef_path) if hef_path else HEF_MODEL_PATH
         self.pt_path = Path(pt_path) if pt_path else PT_MODEL_PATH
         self.confidence_threshold = confidence_threshold
         self.nms_threshold = nms_threshold
-        self.target_classes = target_classes or VEHICLE_CLASSES  # Default: Car and Truck only
+        self.detect_all_objects = detect_all_objects
+        
+        # Set target classes based on mode
+        if target_classes:
+            self.target_classes = target_classes
+        elif detect_all_objects:
+            self.target_classes = ALL_TARGET_CLASSES
+        else:
+            self.target_classes = VEHICLE_CLASSES
+        
         self.enable_plate_recognition = enable_plate_recognition
         
         # Runtime state
@@ -941,20 +988,44 @@ class HailoDetector:
                 if conf < self.confidence_threshold:
                     continue
                 
-                if cls_id not in self.target_classes:
-                    continue
+                # If detecting all objects, use broader filtering
+                if self.detect_all_objects:
+                    # Accept all COCO classes but label them appropriately
+                    display_label = self.get_display_label(cls_id, COCO_CLASSES.get(cls_id, "Object"))
+                else:
+                    if cls_id not in self.target_classes:
+                        continue
+                    display_label = self.target_classes.get(cls_id, COCO_CLASSES.get(cls_id, "Unknown"))
                 
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                label = self.target_classes.get(cls_id, COCO_CLASSES.get(cls_id, "Unknown"))
                 
                 detections.append(Detection(
                     bbox=(x1, y1, x2, y2),
                     confidence=conf,
                     class_id=cls_id,
-                    label=label
+                    label=display_label
                 ))
         
         return detections
+    
+    @staticmethod
+    def get_display_label(class_id: int, original_label: str) -> str:
+        """
+        Get the display label for a detection.
+        
+        Args:
+            class_id: COCO class ID
+            original_label: Original class label
+            
+        Returns:
+            Display label: "Person", "Vehicle", or "Object"
+        """
+        if class_id == 0:
+            return "Person"
+        elif class_id in [2, 7]:  # Car, Truck
+            return "Vehicle"
+        else:
+            return "Object"
     
     def detect(self, frame: np.ndarray, recognize_plates: bool = True) -> List[Detection]:
         """
@@ -1052,7 +1123,7 @@ class HailoDetector:
         self,
         frame: np.ndarray,
         detections: List[Detection],
-        color: Tuple[int, int, int] = (0, 255, 0),
+        color: Tuple[int, int, int] = None,  # Changed to None for auto-coloring
         plate_color: Tuple[int, int, int] = (0, 165, 255),  # Orange for plates
         thickness: int = 2,
         show_label: bool = True,
@@ -1065,7 +1136,7 @@ class HailoDetector:
         Args:
             frame: BGR image
             detections: List of Detection objects
-            color: Vehicle box color (BGR)
+            color: Box color (BGR) - if None, auto-color by class
             plate_color: Plate box/text color (BGR)
             thickness: Line thickness
             show_label: Show class label
@@ -1077,13 +1148,29 @@ class HailoDetector:
         """
         annotated = frame.copy()
         
+        # Color scheme for different detection types
+        COLOR_PERSON = (0, 255, 0)      # Green for Person
+        COLOR_VEHICLE = (255, 0, 0)     # Blue for Vehicle
+        COLOR_OBJECT = (0, 255, 255)    # Yellow for Object
+        
         for det in detections:
             x1, y1, x2, y2 = det.bbox
             
-            # Draw vehicle box
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, thickness)
+            # Auto-select color based on label if not specified
+            if color is None:
+                if det.label == "Person":
+                    box_color = COLOR_PERSON
+                elif det.label == "Vehicle":
+                    box_color = COLOR_VEHICLE
+                else:
+                    box_color = COLOR_OBJECT
+            else:
+                box_color = color
             
-            # Build label text (vehicle type + confidence)
+            # Draw vehicle/person/object box
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), box_color, thickness)
+            
+            # Build label text
             if show_label or show_confidence:
                 parts = []
                 if show_label:
@@ -1102,7 +1189,7 @@ class HailoDetector:
                     annotated,
                     (x1, y1 - text_height - 10),
                     (x1 + text_width + 4, y1),
-                    color,
+                    box_color,
                     -1
                 )
                 
@@ -1117,20 +1204,18 @@ class HailoDetector:
                     1
                 )
             
-            # Draw plate info
-            if show_plate and det.has_plate:
+            # Draw plate info (only for vehicles)
+            if show_plate and det.has_plate and det.label == "Vehicle":
                 # Draw plate bounding box if available
                 if det.plate_bbox:
                     px1, py1, px2, py2 = det.plate_bbox
                     cv2.rectangle(annotated, (px1, py1), (px2, py2), plate_color, 2)
                 
-                # Draw plate number below vehicle box
-                plate_text = f"🚗 {det.plate_number}"
+                plate_text = f"{det.plate_number}"
                 (plate_w, plate_h), _ = cv2.getTextSize(
                     det.plate_number, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2
                 )
                 
-                # Background for plate text
                 cv2.rectangle(
                     annotated,
                     (x1, y2 + 2),
@@ -1139,7 +1224,6 @@ class HailoDetector:
                     -1
                 )
                 
-                # Plate text
                 cv2.putText(
                     annotated,
                     det.plate_number,
