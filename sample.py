@@ -92,7 +92,7 @@ vdevice_params = VDevice.create_params()
 device = VDevice(vdevice_params)
 configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
 network_group = device.configure(hef, configure_params)[0]
-ng_params = network_group.create_params()
+ng_params = None  # Use None for YOLOv8 HEFs
 
 # Input info
 input_vstream_info = network_group.get_input_vstream_infos()[0]
