@@ -356,61 +356,93 @@ def preprocess_frame(frame):
     resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
     # Convert BGR to RGB
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    # Normalize pixel values (0-255 -> 0.0-1.0)
-    normalized = rgb.astype(np.float32) / 255.0
+    # DO NOT normalize or convert to float32!
     # Add batch dimension (HWC -> 1HWC)
-    input_data = np.expand_dims(normalized, axis=0)
-    return input_data
+    return np.expand_dims(rgb.astype(np.uint8), axis=0)
 
-def postprocess_results(output, frame_shape, conf_threshold=0.5):
-    # TODO: This postprocessing may need adjustment based on your specific HEF!
-    # Different HEF compilations can have different output formats.
-    # If detections aren't working, you may need to:
-    #   1. Check the HEF output format with: hailortcli parse-hef yolov8n.hef
-    #   2. Adjust this function to match the output tensor layout
-    detections = []
+# -----------------------------
+# YOLOv8 Decoding (proper, simplified)
+# -----------------------------
+def decode_yolov8(output, frame_shape, conf_thres=0.4):
     h, w = frame_shape[:2]
-    
-    for detection in output:
-        if len(detection) >= 6:
-            x_center, y_center, width, height, conf, cls_id = detection[:6]
-            cls_id_int = int(cls_id)
-            if conf > conf_threshold and cls_id_int in detected_classes:
-                x1 = int((x_center - width / 2) * w)
-                y1 = int((y_center - height / 2) * h)
-                x2 = int((x_center + width / 2) * w)
-                y2 = int((y_center + height / 2) * h)
-                detections.append({'bbox': (x1, y1, x2, y2), 'conf': conf, 'class_id': cls_id_int})
+    detections = []
+
+    preds = output.reshape(-1, 84)
+    boxes = preds[:, :4]
+    scores = preds[:, 4:5] * preds[:, 5:]
+    class_ids = np.argmax(scores, axis=1)
+    confidences = np.max(scores, axis=1)
+
+    for i in range(len(confidences)):
+        if confidences[i] > conf_thres and class_ids[i] in detected_classes:
+            cx, cy, bw, bh = boxes[i]
+            x1 = int((cx - bw/2) * w)
+            y1 = int((cy - bh/2) * h)
+            x2 = int((cx + bw/2) * w)
+            y2 = int((cy + bh/2) * h)
+            detections.append({
+                "bbox": (x1, y1, x2, y2),
+                "conf": float(confidences[i]),
+                "class_id": int(class_ids[i])
+            })
     return detections
+
+# -----------------------------
+# Simple NMS (Non-Maximum Suppression)
+# -----------------------------
+def nms(detections, iou_threshold=0.5):
+    if not detections:
+        return []
+    boxes = np.array([d['bbox'] for d in detections])
+    scores = np.array([d['conf'] for d in detections])
+    idxs = np.argsort(scores)[::-1]
+    keep = []
+    while len(idxs) > 0:
+        i = idxs[0]
+        keep.append(i)
+        if len(idxs) == 1:
+            break
+        rest = idxs[1:]
+        x1 = np.maximum(boxes[i, 0], boxes[rest, 0])
+        y1 = np.maximum(boxes[i, 1], boxes[rest, 1])
+        x2 = np.minimum(boxes[i, 2], boxes[rest, 2])
+        y2 = np.minimum(boxes[i, 3], boxes[rest, 3])
+        inter_area = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
+        box_area_i = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
+        box_area_rest = (boxes[rest, 2] - boxes[rest, 0]) * (boxes[rest, 3] - boxes[rest, 1])
+        union_area = box_area_i + box_area_rest - inter_area
+        iou = inter_area / (union_area + 1e-6)
+        idxs = idxs[1:][iou < iou_threshold]
+    return [detections[i] for i in keep]
+
+# -----------------------------
+# Hailo inference pipeline (create ONCE)
+# -----------------------------
+hailo_infer_pipeline = None
+if HAILO_AVAILABLE and os.path.isfile(HEF_MODEL):
+    try:
+        hailo_infer_pipeline = InferVStreams(network_group, network_group_params)
+        hailo_infer_pipeline.__enter__()
+    except Exception as e:
+        print(f"❌ Failed to create Hailo InferVStreams: {e}")
+        hailo_infer_pipeline = None
 
 def run_hailo_inference(frame):
     input_data = preprocess_frame(frame)
-    
-    # The input data for Hailo is expected to be BHW(C) for a typical NCHW input.
-    # For a YOLO model, the input is usually BGR or RGB, NCHW (1, 3, 640, 640).
-    # Since preprocess_frame creates (1, 640, 640, 3) (NHWC), we need to ensure the Hailo HEF is expecting NHWC
-    # or transpose the NumPy array to NCHW before sending. Assuming HEF input expects NHWC or the
-    # platform handles the conversion, but typically deep learning expects NCHW.
-    # We will stick to the original HWC->1HWC logic in preprocess for now, as that's standard for Hailo.
-    
-    with InferVStreams(network_group, network_group_params) as infer_pipeline:
-        input_dict = {network_group.get_input_vstream_infos()[0].name: input_data}
-        output = infer_pipeline.infer(input_dict)
-    
-    # The output will be a dictionary of {output_vstream_name: np.array}
+    input_dict = {network_group.get_input_vstream_infos()[0].name: input_data}
+    output = hailo_infer_pipeline.infer(input_dict)
     output_name = list(output.keys())[0]
     raw_output = output[output_name][0]
-    
-    # The raw_output from the HEF needs to be interpreted. This is the most likely source of the SegFault/bad results
-    # if the format is wrong. The format is typically a flat tensor (e.g., 84 x 8400) that needs special decoding.
-    # Assuming the HEF was compiled with a custom post-processor or the raw output is simplified:
-    
-    return postprocess_results(raw_output, frame.shape)
+    # Decode YOLOv8 output
+    detections = decode_yolov8(raw_output, frame.shape, conf_thres=0.4)
+    # Apply NMS
+    detections = nms(detections, iou_threshold=0.5)
+    return detections
 
 def run_inference(frame):
     # Use Hailo for detection if available and HEF is loaded, else fallback to CPU YOLO
     try:
-        if HAILO_AVAILABLE and target is not None:
+        if HAILO_AVAILABLE and target is not None and hailo_infer_pipeline is not None:
             return run_hailo_inference(frame)
         else:
             results = model(frame, verbose=False)
@@ -597,10 +629,47 @@ if ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE:
         print(f"⚠️ Final push failed: {e}")
 
 # Release Hailo last
+if hailo_infer_pipeline is not None:
+    try:
+        hailo_infer_pipeline.__exit__(None, None, None)
+    except Exception as e:
+        print(f"⚠️ Failed to release Hailo InferVStreams: {e}")
+
 if target is not None:
     try:
         target.release()
     except Exception as e:
         print(f"⚠️ Failed to release Hailo VDevice: {e}")
-        
+
 print("👋 Cleanup complete")
+
+# Common reasons why detection may not work when using Hailo:
+#
+# 1. The HEF file (compiled model) output format may not match the postprocess_results() logic.
+#    - Hailo models often output raw tensors that require custom decoding.
+#    - The postprocess_results() function assumes a specific output layout (e.g., [x_center, y_center, width, height, conf, class_id]).
+#    - If the actual output is different (e.g., shape, order, or number of outputs), detections will fail or be empty.
+#
+# 2. The HEF file may not be compatible with your input size or model version.
+#    - Ensure the yolov8n.hef matches your expected input size (e.g., 640x640) and is for the correct YOLO version.
+#
+# 3. The Hailo model may require additional post-processing (e.g., NMS, anchor decoding) not present in your code.
+#    - Some Hailo HEFs are compiled without post-processing, so you must implement YOLO decoding and NMS yourself.
+#
+# 4. The input preprocessing may not match the model's expectations.
+#    - Check if the model expects NHWC or NCHW, RGB or BGR, and normalization range.
+#
+# 5. The detection confidence threshold may be too high.
+#    - Try lowering the conf_threshold in postprocess_results().
+#
+# 6. The model may not be loaded or configured correctly (target, network_group, etc.).
+#    - Check for errors in the Hailo initialization block.
+#
+# 7. The output tensor may be empty or have unexpected values.
+#    - Print or inspect the raw_output in run_hailo_inference() to debug.
+
+# To debug:
+# - Print the shape and a sample of raw_output in run_hailo_inference().
+# - Use `hailortcli parse-hef yolov8n.hef` to inspect the output tensor format.
+# - Compare your postprocess_results() logic with the actual output format.
+# - Try running the Hailo TAPPAS demo or example scripts to verify hardware and model.
