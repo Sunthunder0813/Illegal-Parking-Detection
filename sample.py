@@ -181,14 +181,14 @@ INPUT_WIDTH = 640
 # Detection settings
 # -----------------------------
 DETECTION_CLASSES = {
-    0: "Person",
+    0: "Person",  # YOLOv8n COCO: 0 is 'person'
     2: "Car",
     3: "Motorcycle",
     5: "Bus",
     7: "Truck"
 }
 
-CONFIDENCE_THRESHOLD = 0.25
+CONFIDENCE_THRESHOLD = 0.15  # Lowered from 0.25 to 0.15 for more sensitivity
 DEBUG_DETECTIONS = True
 
 def get_label(class_id):
@@ -324,6 +324,10 @@ def postprocess_results(output, frame_shape, conf_threshold=None):
             cls_id = int(np.argmax(class_scores))
             conf = float(class_scores[cls_id])
             
+            # --- DEBUG: Print person confidence ---
+            if DEBUG_DETECTIONS and cls_id == 0:
+                print(f"[DEBUG] Person conf: {conf:.3f}")
+
             if conf > conf_threshold and cls_id in DETECTION_CLASSES:
                 scale_x = original_w / INPUT_WIDTH
                 scale_y = original_h / INPUT_HEIGHT
@@ -383,6 +387,11 @@ def run_inference(frame):
             output_array = np.array(output_data).squeeze()
             dets = postprocess_results(output_array, (original_h, original_w))
             detections.extend(dets)
+        # --- DEBUG: Print all detections ---
+        if DEBUG_DETECTIONS:
+            print(f"[DEBUG] Total detections: {len(detections)}")
+            for d in detections:
+                print(f"[DEBUG] Det: {d}")
         return simple_nms(detections)
     except Exception as e:
         print(f"⚠️ Hailo inference error: {e}")
