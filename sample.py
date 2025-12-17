@@ -350,7 +350,7 @@ def postprocess_results(output, frame_shape, conf_threshold=0.35):
     Handles multiple output formats.
     """
     detections = []
-    h, w = frame_shape[:2]
+    original_h, original_w = frame_shape[:2]
     
     # Handle different output shapes
     if output is None or len(output) == 0:
@@ -367,9 +367,10 @@ def postprocess_results(output, frame_shape, conf_threshold=0.35):
             output = output.T
         
         if output.shape[1] >= 84:
-            # YOLOv8 format: first 4 are box coords, rest are class scores
+            # YOLOv8 format: first 4 are box coords (x_center, y_center, width, height in pixels relative to INPUT_WIDTH/INPUT_HEIGHT)
+            # Columns 4-83 are class scores for 80 COCO classes
             for detection in output:
-                x_center, y_center, width, height = detection[:4]
+                x_center, y_center, box_w, box_h = detection[:4]
                 class_scores = detection[4:84]  # 80 COCO classes
                 
                 cls_id = int(np.argmax(class_scores))
@@ -377,19 +378,23 @@ def postprocess_results(output, frame_shape, conf_threshold=0.35):
                 
                 # Only detect our target classes
                 if conf > conf_threshold and cls_id in DETECTION_CLASSES:
-                    # Convert normalized coords to pixel coords
-                    x1 = int((x_center - width / 2) * w / INPUT_WIDTH * w) if x_center < 1 else int(x_center - width / 2)
-                    y1 = int((y_center - height / 2) * h / INPUT_HEIGHT * h) if y_center < 1 else int(y_center - height / 2)
-                    x2 = int((x_center + width / 2) * w / INPUT_WIDTH * w) if x_center < 1 else int(x_center + width / 2)
-                    y2 = int((y_center + height / 2) * h / INPUT_HEIGHT * h) if y_center < 1 else int(y_center + height / 2)
+                    # Scale coordinates from model input size to original frame size
+                    scale_x = original_w / INPUT_WIDTH
+                    scale_y = original_h / INPUT_HEIGHT
+                    
+                    # Convert center format to corner format and scale
+                    x1 = int((x_center - box_w / 2) * scale_x)
+                    y1 = int((y_center - box_h / 2) * scale_y)
+                    x2 = int((x_center + box_w / 2) * scale_x)
+                    y2 = int((y_center + box_h / 2) * scale_y)
                     
                     # Clamp to frame bounds
-                    x1 = max(0, min(x1, w - 1))
-                    y1 = max(0, min(y1, h - 1))
-                    x2 = max(0, min(x2, w - 1))
-                    y2 = max(0, min(y2, h - 1))
+                    x1 = max(0, min(x1, original_w - 1))
+                    y1 = max(0, min(y1, original_h - 1))
+                    x2 = max(0, min(x2, original_w - 1))
+                    y2 = max(0, min(y2, original_h - 1))
                     
-                    if x2 > x1 and y2 > y1:  # Valid box
+                    if x2 > x1 + 10 and y2 > y1 + 10:  # Valid box with minimum size
                         detections.append({
                             'bbox': (x1, y1, x2, y2),
                             'conf': conf,
@@ -398,33 +403,40 @@ def postprocess_results(output, frame_shape, conf_threshold=0.35):
                         })
         
         elif output.shape[1] >= 6:
-            # Already in [x,y,w,h,conf,cls] format
+            # Already in [x,y,w,h,conf,cls] format (normalized 0-1)
             for detection in output:
                 if len(detection) >= 6:
-                    x_center, y_center, width, height, conf, cls_id = detection[:6]
+                    x_center, y_center, box_w, box_h, conf, cls_id = detection[:6]
                     cls_id_int = int(cls_id)
                     
                     if conf > conf_threshold and cls_id_int in DETECTION_CLASSES:
-                        x1 = int((x_center - width / 2) * w)
-                        y1 = int((y_center - height / 2) * h)
-                        x2 = int((x_center + width / 2) * w)
-                        y2 = int((y_center + height / 2) * h)
+                        # If values are normalized (0-1), scale to original frame
+                        if x_center <= 1.0 and y_center <= 1.0:
+                            x1 = int((x_center - box_w / 2) * original_w)
+                            y1 = int((y_center - box_h / 2) * original_h)
+                            x2 = int((x_center + box_w / 2) * original_w)
+                            y2 = int((y_center + box_h / 2) * original_h)
+                        else:
+                            # Values are in pixel coordinates relative to input size
+                            scale_x = original_w / INPUT_WIDTH
+                            scale_y = original_h / INPUT_HEIGHT
+                            x1 = int((x_center - box_w / 2) * scale_x)
+                            y1 = int((y_center - box_h / 2) * scale_y)
+                            x2 = int((x_center + box_w / 2) * scale_x)
+                            y2 = int((y_center + box_h / 2) * scale_y)
                         
-                        x1 = max(0, min(x1, w - 1))
-                        y1 = max(0, min(y1, h - 1))
-                        x2 = max(0, min(x2, w - 1))
-                        y2 = max(0, min(y2, h - 1))
+                        x1 = max(0, min(x1, original_w - 1))
+                        y1 = max(0, min(y1, original_h - 1))
+                        x2 = max(0, min(x2, original_w - 1))
+                        y2 = max(0, min(y2, original_h - 1))
                         
-                        if x2 > x1 and y2 > y1:
+                        if x2 > x1 + 10 and y2 > y1 + 10:
                             detections.append({
                                 'bbox': (x1, y1, x2, y2),
                                 'conf': conf,
                                 'class_id': cls_id_int,
                                 'label': get_label(cls_id_int)
                             })
-    
-    # Apply simple NMS
-    detections = simple_nms(detections, iou_threshold=0.45)
     
     return detections
 
@@ -467,8 +479,9 @@ def iou(box1, box2):
     return inter_area / union_area if union_area > 0 else 0
 
 
-# ...existing code until run_inference function...
-
+# -----------------------------
+# Inference functions
+# -----------------------------
 def run_inference(frame):
     try:
         if HAILO_AVAILABLE:
@@ -494,6 +507,42 @@ def run_inference(frame):
             return detections
     except Exception as e:
         print(f"⚠️ Inference failed: {e}")
+        return []
+
+
+def run_hailo_inference(frame):
+    """Run inference using Hailo NPU"""
+    try:
+        original_h, original_w = frame.shape[:2]
+        
+        # Preprocess: resize to model input size
+        resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
+        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        normalized = rgb.astype(np.float32) / 255.0
+        input_data = np.expand_dims(normalized, axis=0)
+        
+        # Run inference on Hailo
+        with InferVStreams(network_group, network_group_params) as infer_pipeline:
+            input_dict = {input_info.name: input_data}
+            output = infer_pipeline.infer(input_dict)
+        
+        # Get output - handle different output formats
+        detections = []
+        for output_name, output_data in output.items():
+            output_array = np.array(output_data).squeeze()
+            
+            # Process the output
+            dets = postprocess_results(output_array, (original_h, original_w), conf_threshold=0.35)
+            detections.extend(dets)
+        
+        # Apply NMS across all outputs
+        detections = simple_nms(detections, iou_threshold=0.45)
+        
+        return detections
+    except Exception as e:
+        print(f"⚠️ Hailo inference error: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
