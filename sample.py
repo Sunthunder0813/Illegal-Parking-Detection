@@ -169,6 +169,9 @@ target = None
 network_group = None
 network_group_params = None
 input_info = None
+output_info = None
+input_vstream_params = None
+output_vstream_params = None
 INPUT_HEIGHT = 640
 INPUT_WIDTH = 640
 
@@ -251,12 +254,23 @@ try:
     configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
     network_group = target.configure(hef, configure_params)[0]
     network_group_params = network_group.create_params()
-    input_info = network_group.get_input_vstream_infos()[0]
+    
+    # Get input and output vstream info
+    input_vstreams_info = network_group.get_input_vstream_infos()
+    output_vstreams_info = network_group.get_output_vstream_infos()
+    input_info = input_vstreams_info[0]
+    output_info = output_vstreams_info
+    
+    # Create vstream params for input and output
+    input_vstream_params = {info.name: network_group.make_input_vstream_params({}, info.name) for info in input_vstreams_info}
+    output_vstream_params = {info.name: network_group.make_output_vstream_params({}, info.name) for info in output_vstreams_info}
+    
     INPUT_HEIGHT = input_info.shape[1]
     INPUT_WIDTH = input_info.shape[2]
     print(f"✅ Hailo-8L initialized successfully!")
     print(f"   Model: {HEF_MODEL}")
     print(f"   Input shape: ({INPUT_HEIGHT}, {INPUT_WIDTH})")
+    print(f"   Output layers: {[info.name for info in output_vstreams_info]}")
 except Exception as e:
     print(f"❌ Hailo setup failed: {e}")
     print("   Make sure:")
@@ -357,7 +371,7 @@ def run_inference(frame):
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         input_data = np.expand_dims(rgb, axis=0).astype(np.uint8)
         
-        with InferVStreams(network_group, network_group_params) as infer_pipeline:
+        with InferVStreams(network_group, input_vstream_params, output_vstream_params) as infer_pipeline:
             output = infer_pipeline.infer({input_info.name: input_data})
         
         detections = []
