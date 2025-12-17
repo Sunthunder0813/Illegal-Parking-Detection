@@ -159,8 +159,6 @@ except ImportError:
 # -----------------------------
 # Paths
 # -----------------------------
-PT_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.pt"
-ONNX_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.onnx"
 HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
 
 # -----------------------------
@@ -204,34 +202,35 @@ COLORS = {
 # -----------------------------
 # Auto-download HEF if missing
 # -----------------------------
-def download_hef():
-    print("🔍 Attempting to find/download HEF file...")
+def find_local_hef():
+    """Find HEF file from local/system paths only (no URL download)"""
+    print("🔍 Searching for local HEF file...")
+    
+    # Check if already at target location
+    if os.path.isfile(HEF_MODEL):
+        print(f"✅ Found HEF at: {HEF_MODEL}")
+        return True
+    
+    # Check system paths where Hailo may have installed models
     system_hef_paths = [
         "/usr/share/hailo-models/yolov8n.hef",
         "/usr/share/hailo/models/yolov8n.hef",
-        "/opt/hailo/models/yolov8n.hef"
+        "/opt/hailo/models/yolov8n.hef",
+        "/home/set-admin/yolov8n.hef",
+        os.path.expanduser("~/yolov8n.hef"),
     ]
+    
     for path in system_hef_paths:
         if os.path.isfile(path):
             print(f"✅ Found system HEF: {path}")
             try:
                 import shutil
                 shutil.copy(path, HEF_MODEL)
+                print(f"✅ Copied to: {HEF_MODEL}")
                 return True
             except Exception as e:
                 print(f"⚠️ Failed to copy: {e}")
     
-    hef_urls = [
-        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef",
-    ]
-    for url in hef_urls:
-        print(f"📥 Downloading from: {url}")
-        try:
-            result = subprocess.run(["wget", "-O", HEF_MODEL, url], timeout=120)
-            if result.returncode == 0 and os.path.isfile(HEF_MODEL):
-                return True
-        except Exception as e:
-            print(f"⚠️ Download failed: {e}")
     return False
 
 # -----------------------------
@@ -239,12 +238,10 @@ def download_hef():
 # -----------------------------
 if not os.path.isfile(HEF_MODEL):
     print(f"⚠️ HEF model not found at: {HEF_MODEL}")
-    print("📥 Attempting to download...")
-    if not download_hef():
-        print("❌ Failed to download HEF model.")
-        print("   Please manually download from:")
-        print("   wget -O /home/set-admin/Illegal-Parking-Detection/yolov8n.hef \\")
-        print("     https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef")
+    if not find_local_hef():
+        print("❌ Local HEF file not found.")
+        print("   Please place yolov8n.hef at:")
+        print(f"   {HEF_MODEL}")
         sys.exit(1)
 
 try:
