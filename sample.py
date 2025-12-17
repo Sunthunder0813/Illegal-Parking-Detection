@@ -83,6 +83,10 @@ input_vstream_info = network_group.get_input_vstream_infos()[0]
 INPUT_HEIGHT = input_vstream_info.shape[1]
 INPUT_WIDTH = input_vstream_info.shape[2]
 
+# Output vstream params (required for InferVStreams)
+output_vstream_infos = network_group.get_output_vstream_infos()
+output_vstreams_params = [info.create_params() for info in output_vstream_infos]
+
 # -----------------------------
 # PREPROCESS FRAME
 # -----------------------------
@@ -124,7 +128,8 @@ def postprocess(output, frame_shape, conf_thresh=0.3):
 # -----------------------------
 def run_inference(frame):
     input_data = preprocess(frame)
-    with InferVStreams(network_group, ng_params) as infer_pipeline:
+    # Pass output_vstreams_params to InferVStreams
+    with InferVStreams(network_group, ng_params, output_vstreams_params) as infer_pipeline:
         input_name = network_group.get_input_vstream_infos()[0].name
         output_dict = infer_pipeline.infer({input_name: input_data})
         output_name = list(output_dict.keys())[0]
