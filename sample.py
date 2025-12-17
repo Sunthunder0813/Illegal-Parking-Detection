@@ -327,26 +327,43 @@ def preprocess_frame(frame):
     return input_data
 
 def postprocess_results(output, frame_shape, conf_threshold=0.5):
-    # TODO: This postprocessing may need adjustment based on your specific HEF!
-    # Different HEF compilations can have different output formats.
-    # If detections aren't working, you may need to:
-    #   1. Check the HEF output format with: hailortcli parse-hef yolov8n.hef
-    #   2. Adjust this function to match the output tensor layout
+    # DEBUG: Print output shape and a sample
+    print(f"[DEBUG] Hailo output shape: {output.shape}")
+    print(f"[DEBUG] Hailo output sample: {output.flatten()[:10]}")
+
     detections = []
     h, w = frame_shape[:2]
-    
-    for detection in output:
-        if len(detection) >= 6:
-            x_center, y_center, width, height, conf, cls_id = detection[:6]
-            
-            cls_id_int = int(cls_id)
-            if conf > conf_threshold and cls_id_int in vehicle_classes:
-                x1 = int((x_center - width / 2) * w)
-                y1 = int((y_center - height / 2) * h)
-                x2 = int((x_center + width / 2) * w)
-                y2 = int((y_center + height / 2) * h)
-                
-                detections.append({'bbox': (x1, y1, x2, y2), 'conf': conf, 'class_id': cls_id_int})
+
+    # Typical YOLOv8 output: (N, 84) where 84 = 4 + 1 + 80
+    # [x, y, w, h, obj_conf, class_conf_0, ..., class_conf_79]
+    if len(output.shape) == 2 and output.shape[1] >= 85:
+        for row in output:
+            x, y, bw, bh = row[:4]
+            obj_conf = row[4]
+            class_confs = row[5:]
+            cls_id = int(np.argmax(class_confs))
+            cls_conf = class_confs[cls_id]
+            conf = obj_conf * cls_conf
+
+            # Only keep vehicle/person classes
+            if conf > conf_threshold and (cls_id in vehicle_classes or cls_id == 0):  # 0: person
+                x1 = int((x - bw / 2) * w)
+                y1 = int((y - bh / 2) * h)
+                x2 = int((x + bw / 2) * w)
+                y2 = int((y + bh / 2) * h)
+                detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(conf), 'class_id': cls_id})
+    else:
+        # Fallback: try to parse as before (legacy)
+        for detection in output:
+            if len(detection) >= 6:
+                x_center, y_center, width, height, conf, cls_id = detection[:6]
+                cls_id_int = int(cls_id)
+                if conf > conf_threshold and cls_id_int in vehicle_classes:
+                    x1 = int((x_center - width / 2) * w)
+                    y1 = int((y_center - height / 2) * h)
+                    x2 = int((x_center + width / 2) * w)
+                    y2 = int((y_center + height / 2) * h)
+                    detections.append({'bbox': (x1, y1, x2, y2), 'conf': conf, 'class_id': cls_id_int})
     return detections
 
 def run_hailo_inference(frame):
