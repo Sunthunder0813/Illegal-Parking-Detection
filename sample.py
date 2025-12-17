@@ -151,8 +151,10 @@ try:
     HAILO_AVAILABLE = True
     print("✅ Hailo platform detected")
 except ImportError:
-    print("⚠️ Hailo platform library not found.")
+    print("❌ Hailo platform library not found.")
     print("   RUN: sudo apt install hailo-all && sudo reboot")
+    print("   This script requires Hailo-8L for inference.")
+    sys.exit(1)
 
 # -----------------------------
 # Paths
@@ -233,33 +235,38 @@ def download_hef():
     return False
 
 # -----------------------------
-# Model Setup
+# Model Setup - HAILO ONLY
 # -----------------------------
-if HAILO_AVAILABLE and os.path.isfile(HEF_MODEL):
-    try:
-        hef = HEF(HEF_MODEL)
-        params = VDevice.create_params()
-        target = VDevice(params)
-        configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
-        network_group = target.configure(hef, configure_params)[0]
-        network_group_params = network_group.create_params()
-        input_info = network_group.get_input_vstream_infos()[0]
-        INPUT_HEIGHT = input_info.shape[1]
-        INPUT_WIDTH = input_info.shape[2]
-        print(f"✅ HEF loaded. Input: ({INPUT_HEIGHT}, {INPUT_WIDTH})")
-    except Exception as e:
-        print(f"❌ Hailo setup failed: {e}")
-        HAILO_AVAILABLE = False
-
-if not HAILO_AVAILABLE or network_group is None:
-    print("⚠️ Using CPU inference (Ultralytics YOLO)")
-    try:
-        from ultralytics import YOLO
-        model = YOLO(PT_MODEL)
-        print(f"✅ Loaded YOLO: {PT_MODEL}")
-    except Exception as e:
-        print(f"❌ Failed to load YOLO: {e}")
+if not os.path.isfile(HEF_MODEL):
+    print(f"⚠️ HEF model not found at: {HEF_MODEL}")
+    print("📥 Attempting to download...")
+    if not download_hef():
+        print("❌ Failed to download HEF model.")
+        print("   Please manually download from:")
+        print("   wget -O /home/set-admin/Illegal-Parking-Detection/yolov8n.hef \\")
+        print("     https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef")
         sys.exit(1)
+
+try:
+    hef = HEF(HEF_MODEL)
+    params = VDevice.create_params()
+    target = VDevice(params)
+    configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
+    network_group = target.configure(hef, configure_params)[0]
+    network_group_params = network_group.create_params()
+    input_info = network_group.get_input_vstream_infos()[0]
+    INPUT_HEIGHT = input_info.shape[1]
+    INPUT_WIDTH = input_info.shape[2]
+    print(f"✅ Hailo-8L initialized successfully!")
+    print(f"   Model: {HEF_MODEL}")
+    print(f"   Input shape: ({INPUT_HEIGHT}, {INPUT_WIDTH})")
+except Exception as e:
+    print(f"❌ Hailo setup failed: {e}")
+    print("   Make sure:")
+    print("   1. Hailo AI Kit is properly connected")
+    print("   2. Run: hailortcli fw-control identify")
+    print("   3. Reboot after installing: sudo apt install hailo-all")
+    sys.exit(1)
 
 # -----------------------------
 # Camera Configuration
@@ -343,9 +350,10 @@ def iou(box1, box2):
     return inter / (area1 + area2 - inter) if (area1 + area2 - inter) > 0 else 0
 
 # -----------------------------
-# Inference functions
+# Inference function - HAILO ONLY
 # -----------------------------
-def run_hailo_inference(frame):
+def run_inference(frame):
+    """Run inference using Hailo-8L NPU"""
     try:
         original_h, original_w = frame.shape[:2]
         resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
@@ -362,31 +370,7 @@ def run_hailo_inference(frame):
             detections.extend(dets)
         return simple_nms(detections)
     except Exception as e:
-        print(f"⚠️ Hailo error: {e}")
-        return []
-
-def run_inference(frame):
-    try:
-        if HAILO_AVAILABLE and network_group is not None:
-            return run_hailo_inference(frame)
-        elif model is not None:
-            results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
-            detections = []
-            for result in results:
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    if cls_id in DETECTION_CLASSES:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        detections.append({
-                            'bbox': (x1, y1, x2, y2),
-                            'conf': float(box.conf[0]),
-                            'class_id': cls_id,
-                            'label': get_label(cls_id)
-                        })
-            return detections
-        return []
-    except Exception as e:
-        print(f"⚠️ Inference error: {e}")
+        print(f"⚠️ Hailo inference error: {e}")
         return []
 
 def draw_detections(frame, detections, cam_name):
