@@ -1,9 +1,6 @@
-sudo apt install -y \
-  hailo-all \
-  gstreamer1.0-tools \
-  gstreamer1.0-plugins-good \
-  gstreamer1.0-plugins-bad \
-  gstreamer1.0-plugins-base \
-  gstreamer1.0-libav \
-  python3-gi \
-  gir1.2-gstreamer-1.0
+hailortcli fw-control identify
+
+python3 - <<EOF
+from hailo_platform import HEF
+print("hailo_platform OK")
+EOF
