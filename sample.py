@@ -160,7 +160,7 @@ except ImportError:
 # -----------------------------
 PT_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.pt"
 ONNX_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.onnx"
-HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n_full.hef"  # <-- Updated filename
+HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
 
 # -----------------------------
 # Auto-download HEF if missing
@@ -168,14 +168,14 @@ HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n_full.hef"  # <-- 
 def download_hef():
     """Attempt to download HEF from Hailo Model Zoo or copy from system"""
     print("🔍 Attempting to find/download HEF file...")
-
+    
     # Option 1: Check system-installed models
     system_hef_paths = [
-        "/usr/share/hailo-models/yolov8n_full.hef",  # <-- Updated filename
-        "/usr/share/hailo/models/yolov8n_full.hef",
-        "/opt/hailo/models/yolov8n_full.hef"
+        "/usr/share/hailo-models/yolov8n.hef",
+        "/usr/share/hailo/models/yolov8n.hef",
+        "/opt/hailo/models/yolov8n.hef"
     ]
-
+    
     for path in system_hef_paths:
         if os.path.isfile(path):
             print(f"✅ Found system HEF: {path}")
@@ -186,13 +186,13 @@ def download_hef():
                 return True
             except Exception as e:
                 print(f"⚠️ Failed to copy: {e}")
-
+    
     # Option 2: Try to download from Hailo Model Zoo
     hef_urls = [
-        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n_full.hef",  # <-- Updated URL
+        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef",
         "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/yolov8n_h8l.hef"
     ]
-
+    
     for url in hef_urls:
         print(f"📥 Trying to download from: {url}")
         try:
@@ -205,7 +205,7 @@ def download_hef():
                 return True
         except Exception as e:
             print(f"⚠️ Download failed: {e}")
-
+    
     return False
 
 # -----------------------------
@@ -282,9 +282,8 @@ if not HAILO_AVAILABLE:
 # -----------------------------
 # Vehicle classes (using COCO subset)
 # -----------------------------
-# YOLOv8 default COCO classes: 0: 'Person', 1: 'Bicycle', 2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'
+# YOLOv8 default COCO classes: 1: 'Bicycle', 2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'
 vehicle_classes = {
-    0: "Person",    # <-- Added person class
     1: "Bicycle",
     2: "Car",
     3: "Motorcycle",
@@ -347,7 +346,7 @@ def postprocess_results(output, frame_shape, conf_threshold=0.5):
             conf = obj_conf * cls_conf
 
             # Only keep vehicle/person classes
-            if conf > conf_threshold and (cls_id in vehicle_classes):  # <-- No need for 'or cls_id == 0'
+            if conf > conf_threshold and (cls_id in vehicle_classes or cls_id == 0):  # 0: person
                 x1 = int((x - bw / 2) * w)
                 y1 = int((y - bh / 2) * h)
                 x2 = int((x + bw / 2) * w)
