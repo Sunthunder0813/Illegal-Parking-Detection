@@ -548,6 +548,17 @@ try:
                 target_h = 480
                 resized = [cv2.resize(f, (int(f.shape[1]*target_h/f.shape[0]), target_h)) for f in frames]
                 combined = cv2.hconcat(resized)
+                # --- Add green frame if any detection is present ---
+                any_detection = any(
+                    run_inference(last_frames[i]) if last_frames[i] is not None else []
+                    for i in range(len(frames))
+                )
+                if any_detection:
+                    thickness = 8
+                    color = (0, 255, 0)
+                    h, w = combined.shape[:2]
+                    cv2.rectangle(combined, (0, 0), (w-1, h-1), color, thickness)
+                # ---------------------------------------------------
                 cv2.imshow("Vehicle Detection", combined)
             except Exception as e:
                 print(f"⚠️ Display error: {e}")
