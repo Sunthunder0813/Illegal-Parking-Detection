@@ -1,21 +1,9 @@
-# 1. Update system
-sudo apt update && sudo apt upgrade -y
-
-# 2. Install Hailo software (CRITICAL for NPU acceleration)
-sudo apt install hailo-all -y
-sudo reboot
-
-# 3. After reboot, verify Hailo is detected
-hailortcli fw-control identify
-
-# 4. Install Python dependencies
-pip install opencv-python numpy ultralytics
-
-# 5. Download the YOLOv8 HEF model for Hailo
-wget -O /home/set-admin/Illegal-Parking-Detection/yolov8n.hef \
-  https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef
-
-# 6. Download YOLOv8 PT model (for CPU fallback)
-pip install ultralytics
-python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
-cp yolov8n.pt /home/set-admin/Illegal-Parking-Detection/
+sudo apt install -y \
+  hailo-all \
+  gstreamer1.0-tools \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-libav \
+  python3-gi \
+  gir1.2-gstreamer-1.0
