@@ -380,37 +380,45 @@ def iou(box1, box2):
 # Inference function - HAILO ONLY
 # -----------------------------
 def run_inference(frame):
-    """Run inference using Hailo-8L NPU"""
     try:
         original_h, original_w = frame.shape[:2]
+
+        # Resize to model input
         resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
+
+        # BGR -> RGB
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        # --- FIX: Convert to NCHW (channels first) ---
 
-        nchw = np.transpose(rgb, (2, 0, 1))  # (3, H, W)
-        input_data = np.expand_dims(nchw, axis=0).astype(np.uint8)  # (1, 3, H, W)
-        # Ensure input_data is C-contiguous and correct dtype
-        input_data = np.ascontiguousarray(input_data, dtype=np.uint8)
+        # ✅ NHWC, uint8, batch size = 1
+        input_data = np.expand_dims(rgb, axis=0).astype(np.uint8)
 
-        with InferVStreams(network_group, input_vstream_params, output_vstream_params) as infer_pipeline:
+        # Ensure contiguous memory
+        input_data = np.ascontiguousarray(input_data)
+
+        # --- DEBUG (run once to confirm) ---
+        print("[DEBUG] Input shape:", input_data.shape)
+        print("[DEBUG] Input dtype:", input_data.dtype)
+        print("[DEBUG] Input bytes:", input_data.nbytes)
+
+        with InferVStreams(
+            network_group,
+            input_vstream_params,
+            output_vstream_params
+        ) as infer_pipeline:
             output = infer_pipeline.infer({input_info.name: input_data})
 
         detections = []
         for output_data in output.values():
             output_array = np.array(output_data).squeeze()
-            # --- DEBUG: Print raw output min/max ---
-            print(f"[DEBUG] Output min: {output_array.min() if output_array.size else 'empty'}, max: {output_array.max() if output_array.size else 'empty'}")
             dets = postprocess_results(output_array, (original_h, original_w))
             detections.extend(dets)
-        # --- DEBUG: Print all detections ---
-        if DEBUG_DETECTIONS:
-            print(f"[DEBUG] Total detections: {len(detections)}")
-            for d in detections:
-                print(f"[DEBUG] Det: {d}")
+
         return simple_nms(detections)
+
     except Exception as e:
         print(f"⚠️ Hailo inference error: {e}")
         return []
+
 
 def draw_detections(frame, detections, cam_name):
     counts = {"Person": 0, "Vehicle": 0}
