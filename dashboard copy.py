@@ -7,9 +7,6 @@ import numpy as np
 from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, Response
 
-# Import detection models
-from models import HailoDetector, Detection, InferenceResult, VEHICLE_CLASSES
-
 # Initialize Flask app
 app = Flask(__name__, 
     static_folder="dashboard_static", 
@@ -35,19 +32,6 @@ READ_TIMEOUT_MS = 1000  # 1 second read timeout
 # Camera stream objects
 camera_streams = {}
 
-# Initialize the detector (Hailo or CPU fallback)
-detector = None
-
-def init_detector():
-    """Initialize the vehicle detector"""
-    global detector
-    try:
-        detector = HailoDetector()
-        print(f"✅ Detector initialized: {detector.device_type}")
-    except Exception as e:
-        print(f"⚠️ Failed to initialize detector: {e}")
-        detector = None
-
 class CameraStream:
     def __init__(self, camera_config):
         self.camera = camera_config
@@ -69,14 +53,6 @@ class CameraStream:
         self.is_stabilizing = True  # Flag for stabilization mode
         self.reconnect_cycles = 0  # Track consecutive reconnect cycles
         
-        # Detection-related attributes
-        self.detections = []  # Current detections
-        self.detection_lock = threading.Lock()
-        self.last_detection_time = None
-        self.detection_enabled = True  # Enable/disable detection
-        self.detection_interval = 0.1  # Run detection every 100ms
-        self.last_detection_run = None
-        
     def get_rtsp_url(self):
         """Generate RTSP URL for the camera"""
         ip = self.camera['ip']
@@ -84,70 +60,6 @@ class CameraStream:
             return f"rtsp://{CAMERA_USERNAME}:{CAMERA_PASSWORD}@{ip}:554/stream1"
         else:
             return f"rtsp://{CAMERA_USERNAME}@{ip}:554/stream1"
-    
-    def run_detection(self, frame):
-        """Run vehicle detection on a frame"""
-        global detector
-        if detector is None or not self.detection_enabled:
-            return []
-        
-        try:
-            # Check if enough time has passed since last detection
-            now = datetime.now()
-            if self.last_detection_run:
-                elapsed = (now - self.last_detection_run).total_seconds()
-                if elapsed < self.detection_interval:
-                    return self.detections  # Return cached detections
-            
-            self.last_detection_run = now
-            
-            # Run detection
-            detections = detector.detect(frame, recognize_plates=True)
-            
-            with self.detection_lock:
-                self.detections = detections
-                self.last_detection_time = now
-            
-            return detections
-        except Exception as e:
-            print(f"❌ [{self.camera['name']}] Detection error: {e}")
-            return []
-    
-    def get_detections(self):
-        """Get current detections"""
-        with self.detection_lock:
-            return list(self.detections)
-    
-    def draw_detections(self, frame):
-        """Draw detection boxes on frame"""
-        if frame is None:
-            return frame
-        
-        detections = self.get_detections()
-        for det in detections:
-            x1, y1, x2, y2 = det.bbox
-            color = (0, 255, 0)  # Green for vehicles
-            
-            # Draw bounding box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            
-            # Draw label
-            label = f"{det.label}: {det.confidence:.2f}"
-            if det.plate_number:
-                label += f" | {det.plate_number}"
-            
-            # Background for label
-            (w, h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            cv2.rectangle(frame, (x1, y1 - 20), (x1 + w, y1), color, -1)
-            cv2.putText(frame, label, (x1, y1 - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
-            
-            # Draw plate bbox if available
-            if det.plate_bbox:
-                px1, py1, px2, py2 = det.plate_bbox
-                cv2.rectangle(frame, (px1, py1), (px2, py2), (255, 0, 0), 2)
-        
-        return frame
     
     def start(self):
         """Start camera stream"""
@@ -267,11 +179,6 @@ class CameraStream:
                     ret, frame = self.cap.retrieve()
                     if ret:
                         frame = cv2.resize(frame, (640, 480))
-                        
-                        # Run detection on frame
-                        if self.detection_enabled and not self.is_stabilizing:
-                            self.run_detection(frame)
-                        
                         with self.lock:
                             self.frame = frame
                             self.last_frame_time = datetime.now()
@@ -336,16 +243,13 @@ class CameraStream:
             self.cap = None
     
     def get_frame(self):
-        """Get current frame as JPEG with detections drawn"""
+        """Get current frame as JPEG"""
         with self.lock:
             if self.frame is None or not self.connected:
                 placeholder = self._create_placeholder()
                 _, jpeg = cv2.imencode('.jpg', placeholder)
                 return jpeg.tobytes()
-            
-            # Draw detections on frame copy
-            frame_with_detections = self.draw_detections(self.frame.copy())
-            _, jpeg = cv2.imencode('.jpg', frame_with_detections)
+            _, jpeg = cv2.imencode('.jpg', self.frame)
             return jpeg.tobytes()
     
     def get_status(self):
@@ -382,9 +286,7 @@ class CameraStream:
             'last_frame': self.last_frame_time.strftime('%H:%M:%S') if self.last_frame_time else None,
             'frame_timeout': frame_timed_out,
             'seconds_since_frame': round(seconds_since, 1) if seconds_since else None,
-            'stabilizing': self.is_stabilizing,
-            'detection_count': len(self.detections),
-            'detections': [d.to_dict() for d in self.get_detections()]
+            'stabilizing': self.is_stabilizing
         }
     
     def _create_placeholder(self):
@@ -403,11 +305,7 @@ class CameraStream:
         return img
 
 def init_cameras():
-    """Initialize all camera streams and detector"""
-    # Initialize the detector first
-    init_detector()
-    
-    # Initialize camera streams
+    """Initialize all camera streams"""
     for cam in CAMERAS:
         camera_streams[cam['id']] = CameraStream(cam)
         camera_streams[cam['id']].start()
@@ -548,50 +446,12 @@ def video_feed(camera_id):
 def health():
     """Health check endpoint"""
     camera_status = all(s.connected for s in camera_streams.values()) if camera_streams else False
-    detector_status = detector is not None
     return jsonify({
         "status": "healthy", 
         "mode": "demo",
         "cameras_online": camera_status,
-        "detector_initialized": detector_status,
-        "detector_type": detector.device_type if detector else None,
         "timestamp": datetime.now().isoformat()
     }), 200
-
-@app.route("/api/detections")
-def api_detections():
-    """Get all current detections from all cameras"""
-    all_detections = []
-    for cam_id, stream in camera_streams.items():
-        detections = stream.get_detections()
-        for det in detections:
-            det_dict = det.to_dict()
-            det_dict['camera_id'] = cam_id
-            det_dict['camera_name'] = stream.camera['name']
-            all_detections.append(det_dict)
-    
-    return jsonify({
-        'detections': all_detections,
-        'total_count': len(all_detections),
-        'timestamp': datetime.now().isoformat()
-    })
-
-@app.route("/api/detections/<int:camera_id>")
-def api_camera_detections(camera_id):
-    """Get detections for a specific camera"""
-    stream = camera_streams.get(camera_id)
-    if stream:
-        detections = stream.get_detections()
-        return jsonify({
-            'camera_id': camera_id,
-            'camera_name': stream.camera['name'],
-            'detections': [d.to_dict() for d in detections],
-            'count': len(detections),
-            'timestamp': datetime.now().isoformat()
-        })
-    return jsonify({
-        'error': 'Camera not found'
-    }), 404
 
 @app.route("/api/camera/<int:camera_id>/reconnect", methods=['POST'])
 def api_camera_reconnect(camera_id):
@@ -621,13 +481,8 @@ def api_cameras_reconnect_all():
 # ============== MAIN ==============
 
 if __name__ == "__main__":
-    print("🎥 Initializing cameras and detector...")
+    print("🎥 Initializing cameras...")
     init_cameras()
-    
-    if detector:
-        print(f"🤖 Detector ready: {detector.device_type}")
-    else:
-        print("⚠️ Detector not available - running without detection")
     
     port = int(os.environ.get("PORT", 5001))
     print(f"🚀 Starting dashboard on http://localhost:{port}")
