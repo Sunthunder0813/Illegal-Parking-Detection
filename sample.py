@@ -33,14 +33,28 @@ stop_threads = False
 def camera_reader(cam_index, cam_info):
     global stop_threads
     rtsp_url = f"rtsp://{USERNAME}:{PASSWORD}@{cam_info['ip']}:554/h264"
-    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    cap.set(cv2.CAP_PROP_FPS, 15)
+    print(f"Connecting to {cam_info['name']} at {rtsp_url}")
+    retry_count = 0
+    cap = None
 
-    if not cap.isOpened():
-        print(f"❌ Cannot connect to {cam_info['name']} ({cam_info['ip']})")
+    # Retry connection up to 10 times
+    while not stop_threads and retry_count < 10:
+        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FPS, 15)
+        if cap.isOpened():
+            print(f"✅ Connected to {cam_info['name']}")
+            break
+        else:
+            print(f"❌ Cannot connect to {cam_info['name']} ({cam_info['ip']}) [Attempt {retry_count+1}/10]")
+            cap.release()
+            cap = None
+            retry_count += 1
+            cv2.waitKey(1000)  # Wait 1 second before retrying
+
+    if cap is None or not cap.isOpened():
+        print(f"❌ Failed to connect to {cam_info['name']} after {retry_count} attempts.")
         return
-    print(f"✅ Connected to {cam_info['name']}")
 
     while not stop_threads:
         ret, frame = cap.read()
@@ -50,6 +64,7 @@ def camera_reader(cam_index, cam_info):
                 except: pass
             frame_queues[cam_index].put(frame)
         else:
+            print(f"⚠️ Failed to read frame from {cam_info['name']}")
             cv2.waitKey(10)
     cap.release()
 
