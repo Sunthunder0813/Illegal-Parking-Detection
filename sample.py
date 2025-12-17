@@ -147,7 +147,9 @@ last_push_time = 0
 # -----------------------------
 HAILO_AVAILABLE = False
 try:
-    from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
+    from hailo_platform import (HEF, VDevice, HailoStreamInterface, InferVStreams, 
+                                 ConfigureParams, InputVStreamParams, OutputVStreamParams,
+                                 FormatType)
     HAILO_AVAILABLE = True
     print("✅ Hailo platform detected")
 except ImportError:
@@ -261,9 +263,9 @@ try:
     input_info = input_vstreams_info[0]
     output_info = output_vstreams_info
     
-    # Create vstream params for input and output
-    input_vstream_params = {info.name: network_group.make_input_vstream_params({}, info.name) for info in input_vstreams_info}
-    output_vstream_params = {info.name: network_group.make_output_vstream_params({}, info.name) for info in output_vstreams_info}
+    # Create vstream params using the correct API
+    input_vstream_params = InputVStreamParams.make(network_group, format_type=FormatType.UINT8)
+    output_vstream_params = OutputVStreamParams.make(network_group, format_type=FormatType.FLOAT32)
     
     INPUT_HEIGHT = input_info.shape[1]
     INPUT_WIDTH = input_info.shape[2]
