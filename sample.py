@@ -99,9 +99,7 @@ input_vstream_info = network_group.get_input_vstream_infos()[0]
 INPUT_HEIGHT = input_vstream_info.shape[1]
 INPUT_WIDTH = input_vstream_info.shape[2]
 
-# Output vstream params (required for InferVStreams)
-output_vstream_infos = network_group.get_output_vstream_infos()
-output_vstreams_params = [info.create_params() for info in output_vstream_infos]
+
 
 # -----------------------------
 # PREPROCESS FRAME
