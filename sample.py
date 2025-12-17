@@ -371,7 +371,9 @@ def run_inference(frame):
         original_h, original_w = frame.shape[:2]
         resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        input_data = np.expand_dims(rgb, axis=0).astype(np.uint8)
+        # --- FIX: Convert to NCHW (channels first) ---
+        nchw = np.transpose(rgb, (2, 0, 1))  # (3, H, W)
+        input_data = np.expand_dims(nchw, axis=0).astype(np.uint8)  # (1, 3, H, W)
         
         with InferVStreams(network_group, input_vstream_params, output_vstream_params) as infer_pipeline:
             output = infer_pipeline.infer({input_info.name: input_data})
