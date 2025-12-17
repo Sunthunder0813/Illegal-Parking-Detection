@@ -464,6 +464,27 @@ for i, cam in enumerate(cameras):
     caps.append(cap)
 
 # -----------------------------
+# Detection method selection
+# -----------------------------
+# Set to "python_api" to use this script's detection (default)
+# Set to "tappas_demo" to use Hailo's official TAPPAS detection demo
+DETECTION_METHOD = "python_api"  # or "tappas_demo"
+
+if DETECTION_METHOD == "tappas_demo":
+    # Run Hailo's official detection demo as a subprocess and exit this script
+    print("🔄 Launching Hailo TAPPAS detection demo...")
+    hef_path = HEF_MODEL
+    # You can change the camera index or RTSP URL as needed
+    tappas_cmd = [
+        "hailo-apps", "detection",
+        "--hef", hef_path,
+        "--input-uri", f"rtsp://{username}:{password}@{cameras[0]['ip']}:554/h264"
+    ]
+    print(" ".join(tappas_cmd))
+    subprocess.run(tappas_cmd)
+    sys.exit(0)
+
+# -----------------------------
 # Main loop
 # -----------------------------
 cv2.namedWindow("Vehicle Detection", cv2.WINDOW_NORMAL)
