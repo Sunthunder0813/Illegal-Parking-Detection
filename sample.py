@@ -408,26 +408,23 @@ def run_hailo_inference(frame):
     return postprocess_results(raw_output, frame.shape)
 
 def run_inference(frame):
+    # Always use CPU YOLO for detection, regardless of HAILO_AVAILABLE
     try:
-        if HAILO_AVAILABLE:
-            return run_hailo_inference(frame)
-        else:
-            # CPU (Ultralytics YOLO) inference
-            results = model(frame, verbose=False)
-            detections = []
-            for result in results:
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    class_name = COCO_CLASS_NAMES[cls_id] if cls_id < len(COCO_CLASS_NAMES) else "unknown"
-                    # Detect person by class name (COCO index 0)
-                    if class_name == "person":
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
-                    # Or keep your existing logic for vehicles/person
-                    elif cls_id in detected_classes:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
-            return detections
+        results = model(frame, verbose=False)
+        detections = []
+        for result in results:
+            for box in result.boxes:
+                cls_id = int(box.cls[0])
+                class_name = COCO_CLASS_NAMES[cls_id] if cls_id < len(COCO_CLASS_NAMES) else "unknown"
+                # Detect person by class name (COCO index 0)
+                if class_name == "person":
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
+                # Or keep your existing logic for vehicles/person
+                elif cls_id in detected_classes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
+        return detections
     except Exception as e:
         print(f"⚠️ Inference failed: {e}")
         return []
@@ -548,17 +545,6 @@ try:
                 target_h = 480
                 resized = [cv2.resize(f, (int(f.shape[1]*target_h/f.shape[0]), target_h)) for f in frames]
                 combined = cv2.hconcat(resized)
-                # --- Add green frame if any detection is present ---
-                any_detection = any(
-                    run_inference(last_frames[i]) if last_frames[i] is not None else []
-                    for i in range(len(frames))
-                )
-                if any_detection:
-                    thickness = 8
-                    color = (0, 255, 0)
-                    h, w = combined.shape[:2]
-                    cv2.rectangle(combined, (0, 0), (w-1, h-1), color, thickness)
-                # ---------------------------------------------------
                 cv2.imshow("Vehicle Detection", combined)
             except Exception as e:
                 print(f"⚠️ Display error: {e}")
