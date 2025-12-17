@@ -280,15 +280,33 @@ if not HAILO_AVAILABLE:
         sys.exit(1)
 
 # -----------------------------
-# Vehicle classes (using COCO subset)
+# Detection classes (COCO)
 # -----------------------------
-# YOLOv8 default COCO classes: 1: 'Bicycle', 2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'
-vehicle_classes = {
-    1: "Bicycle",
+# YOLOv8 COCO classes we want to detect
+# 0: person, 2: car, 7: truck
+DETECTION_CLASSES = {
+    0: "Person",
     2: "Car",
     3: "Motorcycle",
     5: "Bus",
     7: "Truck"
+}
+
+# Simplified labels for display
+def get_label(class_id):
+    if class_id == 0:
+        return "Person"
+    elif class_id in [2, 7]:
+        return "Vehicle"
+    elif class_id in [3, 5]:
+        return "Vehicle"
+    return "Object"
+
+# Colors for different classes (BGR)
+COLORS = {
+    "Person": (0, 255, 0),    # Green
+    "Vehicle": (255, 0, 0),   # Blue
+    "Object": (0, 255, 255)   # Yellow
 }
 
 # -----------------------------
@@ -326,52 +344,130 @@ def preprocess_frame(frame):
     input_data = np.expand_dims(normalized, axis=0)
     return input_data
 
-def postprocess_results(output, frame_shape, conf_threshold=0.5):
-    # TODO: This postprocessing may need adjustment based on your specific HEF!
-    # Different HEF compilations can have different output formats.
-    # If detections aren't working, you may need to:
-    #   1. Check the HEF output format with: hailortcli parse-hef yolov8n.hef
-    #   2. Adjust this function to match the output tensor layout
+def postprocess_results(output, frame_shape, conf_threshold=0.35):
+    """
+    Post-process YOLOv8 output from Hailo.
+    Handles multiple output formats.
+    """
     detections = []
     h, w = frame_shape[:2]
     
-    for detection in output:
-        if len(detection) >= 6:
-            x_center, y_center, width, height, conf, cls_id = detection[:6]
-            
-            cls_id_int = int(cls_id)
-            if conf > conf_threshold and cls_id_int in vehicle_classes:
-                x1 = int((x_center - width / 2) * w)
-                y1 = int((y_center - height / 2) * h)
-                x2 = int((x_center + width / 2) * w)
-                y2 = int((y_center + height / 2) * h)
+    # Handle different output shapes
+    if output is None or len(output) == 0:
+        return detections
+    
+    # YOLOv8 output can be:
+    # - Shape (84, 8400) - needs transpose
+    # - Shape (8400, 84) - standard
+    # - Shape (N, 6) - already processed [x,y,w,h,conf,cls]
+    
+    if len(output.shape) == 2:
+        if output.shape[0] == 84:
+            # Transpose from (84, 8400) to (8400, 84)
+            output = output.T
+        
+        if output.shape[1] >= 84:
+            # YOLOv8 format: first 4 are box coords, rest are class scores
+            for detection in output:
+                x_center, y_center, width, height = detection[:4]
+                class_scores = detection[4:84]  # 80 COCO classes
                 
-                detections.append({'bbox': (x1, y1, x2, y2), 'conf': conf, 'class_id': cls_id_int})
+                cls_id = int(np.argmax(class_scores))
+                conf = float(class_scores[cls_id])
+                
+                # Only detect our target classes
+                if conf > conf_threshold and cls_id in DETECTION_CLASSES:
+                    # Convert normalized coords to pixel coords
+                    x1 = int((x_center - width / 2) * w / INPUT_WIDTH * w) if x_center < 1 else int(x_center - width / 2)
+                    y1 = int((y_center - height / 2) * h / INPUT_HEIGHT * h) if y_center < 1 else int(y_center - height / 2)
+                    x2 = int((x_center + width / 2) * w / INPUT_WIDTH * w) if x_center < 1 else int(x_center + width / 2)
+                    y2 = int((y_center + height / 2) * h / INPUT_HEIGHT * h) if y_center < 1 else int(y_center + height / 2)
+                    
+                    # Clamp to frame bounds
+                    x1 = max(0, min(x1, w - 1))
+                    y1 = max(0, min(y1, h - 1))
+                    x2 = max(0, min(x2, w - 1))
+                    y2 = max(0, min(y2, h - 1))
+                    
+                    if x2 > x1 and y2 > y1:  # Valid box
+                        detections.append({
+                            'bbox': (x1, y1, x2, y2),
+                            'conf': conf,
+                            'class_id': cls_id,
+                            'label': get_label(cls_id)
+                        })
+        
+        elif output.shape[1] >= 6:
+            # Already in [x,y,w,h,conf,cls] format
+            for detection in output:
+                if len(detection) >= 6:
+                    x_center, y_center, width, height, conf, cls_id = detection[:6]
+                    cls_id_int = int(cls_id)
+                    
+                    if conf > conf_threshold and cls_id_int in DETECTION_CLASSES:
+                        x1 = int((x_center - width / 2) * w)
+                        y1 = int((y_center - height / 2) * h)
+                        x2 = int((x_center + width / 2) * w)
+                        y2 = int((y_center + height / 2) * h)
+                        
+                        x1 = max(0, min(x1, w - 1))
+                        y1 = max(0, min(y1, h - 1))
+                        x2 = max(0, min(x2, w - 1))
+                        y2 = max(0, min(y2, h - 1))
+                        
+                        if x2 > x1 and y2 > y1:
+                            detections.append({
+                                'bbox': (x1, y1, x2, y2),
+                                'conf': conf,
+                                'class_id': cls_id_int,
+                                'label': get_label(cls_id_int)
+                            })
+    
+    # Apply simple NMS
+    detections = simple_nms(detections, iou_threshold=0.45)
+    
     return detections
 
-def run_hailo_inference(frame):
-    input_data = preprocess_frame(frame)
+
+def simple_nms(detections, iou_threshold=0.45):
+    """Simple Non-Maximum Suppression"""
+    if len(detections) == 0:
+        return []
     
-    # The input data for Hailo is expected to be BHW(C) for a typical NCHW input.
-    # For a YOLO model, the input is usually BGR or RGB, NCHW (1, 3, 640, 640).
-    # Since preprocess_frame creates (1, 640, 640, 3) (NHWC), we need to ensure the Hailo HEF is expecting NHWC
-    # or transpose the NumPy array to NCHW before sending. Assuming HEF input expects NHWC or the
-    # platform handles the conversion, but typically deep learning expects NCHW.
-    # We will stick to the original HWC->1HWC logic in preprocess for now, as that's standard for Hailo.
+    # Sort by confidence
+    detections = sorted(detections, key=lambda x: x['conf'], reverse=True)
     
-    with InferVStreams(network_group, network_group_params) as infer_pipeline:
-        input_dict = {network_group.get_input_vstream_infos()[0].name: input_data}
-        output = infer_pipeline.infer(input_dict)
+    keep = []
+    while detections:
+        best = detections.pop(0)
+        keep.append(best)
+        
+        detections = [
+            d for d in detections
+            if iou(best['bbox'], d['bbox']) < iou_threshold
+        ]
     
-    # The output will be a dictionary of {output_vstream_name: np.array}
-    output_name = list(output.keys())[0]
-    raw_output = output[output_name][0]
+    return keep
+
+
+def iou(box1, box2):
+    """Calculate Intersection over Union"""
+    x1 = max(box1[0], box2[0])
+    y1 = max(box1[1], box2[1])
+    x2 = min(box1[2], box2[2])
+    y2 = min(box1[3], box2[3])
     
-    # The raw_output from the HEF needs to be interpreted. This is the most likely source of the SegFault/bad results
-    # if the format is wrong. The format is typically a flat tensor (e.g., 84 x 8400) that needs special decoding.
-    # Assuming the HEF was compiled with a custom post-processor or the raw output is simplified:
+    inter_area = max(0, x2 - x1) * max(0, y2 - y1)
     
-    return postprocess_results(raw_output, frame.shape)
+    box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    
+    union_area = box1_area + box2_area - inter_area
+    
+    return inter_area / union_area if union_area > 0 else 0
+
+
+# ...existing code until run_inference function...
 
 def run_inference(frame):
     try:
@@ -384,14 +480,66 @@ def run_inference(frame):
             for result in results:
                 for box in result.boxes:
                     cls_id = int(box.cls[0])
-                    # Only detect vehicle classes
-                    if cls_id in vehicle_classes:
+                    conf = float(box.conf[0])
+                    
+                    # Detect persons and vehicles
+                    if cls_id in DETECTION_CLASSES and conf > 0.35:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id})
+                        detections.append({
+                            'bbox': (x1, y1, x2, y2),
+                            'conf': conf,
+                            'class_id': cls_id,
+                            'label': get_label(cls_id)
+                        })
             return detections
     except Exception as e:
         print(f"⚠️ Inference failed: {e}")
         return []
+
+
+def draw_detections(frame, detections, cam_name):
+    """Draw detection boxes and labels on frame"""
+    # Count detections by type
+    counts = {"Person": 0, "Vehicle": 0}
+    
+    for det in detections:
+        x1, y1, x2, y2 = det['bbox']
+        conf = det['conf']
+        label = det.get('label', 'Object')
+        
+        # Get color for this label
+        color = COLORS.get(label, (0, 255, 255))
+        
+        # Count
+        if label in counts:
+            counts[label] += 1
+        
+        # Draw bounding box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        
+        # Draw label background
+        text = f"{label} {conf:.2f}"
+        (text_w, text_h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(frame, (x1, y1 - text_h - 8), (x1 + text_w + 4, y1), color, -1)
+        
+        # Draw label text
+        cv2.putText(frame, text, (x1 + 2, y1 - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+    
+    # Draw camera name
+    cv2.putText(frame, cam_name, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    
+    # Draw detection counts
+    y_offset = 60
+    for label, count in counts.items():
+        if count > 0:
+            color = COLORS.get(label, (255, 255, 255))
+            text = f"{label}: {count}"
+            cv2.putText(frame, text, (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            y_offset += 25
+    
+    return frame, counts
+
 
 # -----------------------------
 # Camera threads
@@ -475,15 +623,8 @@ try:
                 try:
                     detections = run_inference(frame)
                     
-                    for det in detections:
-                        x1, y1, x2, y2 = det['bbox']
-                        conf = det['conf']
-                        label = vehicle_classes.get(det['class_id'], "Unknown")
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1-10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                    
-                    cv2.putText(frame, cam['name'], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    # Draw detections with new function
+                    frame, counts = draw_detections(frame, detections, cam['name'])
                     
                     # GitHub Push Logic
                     if (ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE and 
