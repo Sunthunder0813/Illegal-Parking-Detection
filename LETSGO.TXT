@@ -1,1 +1,1 @@
-https://github.com/hailo-ai/Hailo-Application-Code-Examples/blob/main/runtime/python/object_detection/README.md
+https://hailo.ai/developer-zone/software-downloads/?product=ai_accelerators&device=hailo_8_8l
