@@ -188,7 +188,7 @@ DETECTION_CLASSES = {
     7: "Truck"
 }
 
-CONFIDENCE_THRESHOLD = 0.15  # Lowered from 0.25 to 0.15 for more sensitivity
+CONFIDENCE_THRESHOLD = 0.10  # Lowered from 0.25 to 0.15 for more sensitivity
 DEBUG_DETECTIONS = True
 
 def get_label(class_id):
@@ -302,28 +302,33 @@ def postprocess_results(output, frame_shape, conf_threshold=None):
         conf_threshold = CONFIDENCE_THRESHOLD
     detections = []
     original_h, original_w = frame_shape[:2]
-    
+
+    # --- DEBUG: Print output shape ---
+    print(f"[DEBUG] Raw output shape: {output.shape if output is not None else None}")
+
     if output is None or len(output) == 0:
+        print("[DEBUG] Output is empty or None")
         return detections
-    
+
     if len(output.shape) > 2:
         output = output.reshape(-1, output.shape[-1])
-    
+
     if len(output.shape) != 2:
+        print(f"[DEBUG] Output shape after reshape is not 2D: {output.shape}")
         return detections
-    
+
     if output.shape[0] == 84 and output.shape[1] > 84:
         output = output.T
-    
+
     num_values = output.shape[1]
-    
+
     if num_values >= 84:
         for detection in output:
             x_center, y_center, box_w, box_h = detection[:4]
             class_scores = detection[4:84]
             cls_id = int(np.argmax(class_scores))
             conf = float(class_scores[cls_id])
-            
+
             # --- DEBUG: Print person confidence ---
             if DEBUG_DETECTIONS and cls_id == 0:
                 print(f"[DEBUG] Person conf: {conf:.3f}")
@@ -337,7 +342,10 @@ def postprocess_results(output, frame_shape, conf_threshold=None):
                 y2 = int((y_center + box_h / 2) * scale_y)
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(original_w-1, x2), min(original_h-1, y2)
-                
+
+                # --- DEBUG: Print box coordinates ---
+                print(f"[DEBUG] Box: ({x1},{y1})-({x2},{y2}), conf={conf:.2f}, class={cls_id}")
+
                 if x2 > x1 + 5 and y2 > y1 + 5:
                     detections.append({
                         'bbox': (x1, y1, x2, y2),
@@ -345,6 +353,8 @@ def postprocess_results(output, frame_shape, conf_threshold=None):
                         'class_id': cls_id,
                         'label': get_label(cls_id)
                     })
+    else:
+        print(f"[DEBUG] Output does not have enough values per detection: {num_values}")
     return detections
 
 def simple_nms(detections, iou_threshold=0.45):
@@ -378,13 +388,15 @@ def run_inference(frame):
         # --- FIX: Convert to NCHW (channels first) ---
         nchw = np.transpose(rgb, (2, 0, 1))  # (3, H, W)
         input_data = np.expand_dims(nchw, axis=0).astype(np.uint8)  # (1, 3, H, W)
-        
+
         with InferVStreams(network_group, input_vstream_params, output_vstream_params) as infer_pipeline:
             output = infer_pipeline.infer({input_info.name: input_data})
-        
+
         detections = []
         for output_data in output.values():
             output_array = np.array(output_data).squeeze()
+            # --- DEBUG: Print raw output min/max ---
+            print(f"[DEBUG] Output min: {output_array.min() if output_array.size else 'empty'}, max: {output_array.max() if output_array.size else 'empty'}")
             dets = postprocess_results(output_array, (original_h, original_w))
             detections.extend(dets)
         # --- DEBUG: Print all detections ---
@@ -405,6 +417,8 @@ def draw_detections(frame, detections, cam_name):
         color = COLORS.get(label, (0, 255, 255))
         if label in counts:
             counts[label] += 1
+        # --- DEBUG: Print before drawing ---
+        print(f"[DEBUG] Drawing box: ({x1},{y1})-({x2},{y2}) label={label} conf={det['conf']:.2f}")
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         text = f"{label} {det['conf']:.2f}"
         cv2.putText(frame, text, (x1, y1-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
