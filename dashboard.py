@@ -10,9 +10,8 @@ from flask import Flask, render_template, jsonify, Response
 # Import detection models
 from models import HailoDetector, Detection, InferenceResult, VEHICLE_CLASSES, ALL_DETECTION_CLASSES
 
-# Add PERSON_CLASSES and ALL_DETECTION_CLASSES for broader detection
+# PERSON_CLASSES for color coding in draw_detections
 PERSON_CLASSES = ['person']
-ALL_DETECTION_CLASSES = VEHICLE_CLASSES + PERSON_CLASSES
 
 # Initialize Flask app
 app = Flask(__name__, 
