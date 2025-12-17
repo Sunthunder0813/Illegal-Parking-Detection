@@ -1,594 +1,369 @@
 #!/usr/bin/env python3
-# Raspberry Pi 5 + Hailo-8L
-# Vehicle detection with multi-camera support
-
-# =============================================================================
-# FIX FOR SEGMENTATION FAULT AND QT ERRORS
-# =============================================================================
-# Set environment variables BEFORE importing cv2
+import argparse
 import os
-os.environ["QT_QPA_PLATFORM"] = "xcb"  # Force X11 instead of Wayland
-os.environ["OPENCV_VIDEOIO_PRIORITY_FFMPEG"] = "1"
-os.environ["QT_LOGGING_RULES"] = "*.debug=false"  # Suppress Qt warnings
-
-# =============================================================================
-# WHAT YOU NEED TO DO (Raspberry Pi 5 + Hailo AI Kit Setup)
-# =============================================================================
-#
-# STEP 1: INSTALL HAILO SOFTWARE ON RASPBERRY PI 5
-# ------------------------------------------------
-# Run these commands on your Raspberry Pi 5:
-#
-#   sudo apt update
-#   sudo apt install hailo-all
-#
-# This installs:
-#   - hailo-firmware (NPU firmware)
-#   - hailo-pcie-driver (PCIe driver for Hailo-8L)
-#   - hailo-tappas-core (runtime libraries)
-#   - hailort (Hailo runtime)
-#
-# After installation, REBOOT your Pi:
-#   sudo reboot
-#
-# STEP 2: VERIFY HAILO IS DETECTED
-# --------------------------------
-# Run this command to check if Hailo-8L is detected:
-#
-#   hailortcli fw-control identify
-#
-# You should see output like:
-#   "Device: Hailo-8L, Firmware Version: X.X.X"
-#
-# If not detected, check:
-#   - AI Kit is properly seated on the Pi
-#   - PCIe is enabled in /boot/config.txt
-#
-# STEP 3: GET THE HEF FILE (CRITICAL!) - UPDATED INSTRUCTIONS
-# ------------------------------------
-# Run this command on your Raspberry Pi to download the HEF file:
-#
-#   wget -O /home/set-admin/Illegal-Parking-Detection/yolov8n.hef \
-#     https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef
-#
-# OR check if Hailo already installed example models:
-#   ls /usr/share/hailo-models/
-#   # If yolov8n.hef exists there, copy it:
-#   cp /usr/share/hailo-models/yolov8n.hef /home/set-admin/Illegal-Parking-Detection/
-#
-# STEP 4: PLACE THE HEF FILE
-# --------------------------
-# Copy the .hef file to:
-#   /home/set-admin/Illegal-Parking-Detection/yolov8n.hef
-#
-# STEP 5: INSTALL PYTHON DEPENDENCIES
-# -----------------------------------
-# On your Raspberry Pi 5:
-#
-#   pip install opencv-python numpy
-#   pip install hailo-platform  # Should be installed with hailo-all
-#
-# STEP 6: CONNECT YOUR CAMERAS
-# ----------------------------
-# Update the camera IPs below to match your RTSP cameras
-# Test camera connection first with:
-#   ffplay rtsp://admin:password@192.168.18.2:554/h264
-#
-# STEP 7: RUN THE SCRIPT
-# ----------------------
-#   python sample.py
-#
-# Press 'q' to quit
-#
-# STEP 8: SETUP GITHUB AUTHENTICATION (For auto-push feature)
-# -----------------------------------------------------------
-# Option A - SSH Key (Recommended):
-#   ssh-keygen -t ed25519 -C "santanderjoseph13@gmail.com"
-#   eval "$(ssh-agent -s)"
-#   ssh-add ~/.ssh/id_ed25519
-#   cat ~/.ssh/id_ed25519.pub  # Add this to GitHub Settings -> SSH Keys
-#   git remote set-url origin git@github.com:Sunthunder0813/Illegal-Parking-Detection.git
-#
-# Option B - Personal Access Token:
-#   1. GitHub.com -> Settings -> Developer settings -> Personal access tokens
-#   2. Generate token with 'repo' scope
-#   3. Run: git config --global credential.helper store
-#   4. First push will ask for username and token (use token as password)
-#
-# =============================================================================
-
-import cv2
-import numpy as np
-import threading
-from queue import Queue
 import sys
-import time
-import subprocess
-import signal
+from loguru import logger
+import queue
+import threading
+from functools import partial
+from types import SimpleNamespace
+import numpy as np
+import argparse
+from pathlib import Path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from common.tracker.byte_tracker import BYTETracker
+from common.hailo_inference import HailoInfer
+from object_detection_post_process import inference_result_handler
+from common.toolbox import (
+    init_input_source,
+    get_labels,
+    load_json_file,
+    preprocess,
+    visualize,
+    FrameRateTracker,
+    resolve_net_arg,
+    resolve_input_arg,
+    resolve_output_resolution_arg,
+    list_networks,
+    list_inputs
+)
 
-# -----------------------------
-# Graceful shutdown handler (prevents segfault on Ctrl+C)
-# -----------------------------
-shutdown_requested = False
+APP_NAME = Path(__file__).stem
 
-def signal_handler(sig, frame):
-    global shutdown_requested
-    print("\n⚠️ Shutdown requested...")
-    shutdown_requested = True
+def parse_args() -> argparse.Namespace:
+    """
+    Parse command-line arguments for the detection application.
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+    Returns:
+        argparse.Namespace: Parsed CLI arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Run object detection with optional tracking and performance measurement.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument(
+        "-n", "--net",
+        type=str,
+        help=(
+            "- A local HEF file path\n"
+            "    → uses the specified HEF directly.\n"
+            "- A model name (e.g., yolov8n)\n"
+            "    → automatically downloads & resolves the correct HEF for your device.\n"
+            "      Use --list-nets to see the available nets."
+        )    
+    )
+    parser.add_argument(
+        "-i", "--input",
+        type=str,
+        default=None,
+        help=(
+            "Input source. Examples:\n"
+            "  - Local path: 'bus.jpg', 'video.mp4', 'images_dir/'\n"
+            "  - Special:    'camera' or IP(s) (comma-separated): '192.168.1.2,192.168.1.3'\n"
+            "  - Named resource (without extension), e.g. 'bus'.\n"
+            "    If a named resource is used, it will be downloaded automatically\n"
+            "    if not already available. Use --list-inputs to see the options."
+        )
+    )
+    parser.add_argument(
+        "-b", "--batch_size",
+        type=int,
+        default=1,
+        help="Number of images per batch."
+    )
+    parser.add_argument(
+        "-l", "--labels",
+        type=str,
+        default=str(Path(__file__).parent.parent / "common" / "coco.txt"),
+        help="Path to label file (e.g., coco.txt). If not set, default COCO labels will be used."
+    )
+    parser.add_argument(
+        "-s", "--save_stream_output",
+        action="store_true",
+        help="Save the visualized stream output to disk."
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to save result images or video."
+    )
+    parser.add_argument(
+        "-f", "--framerate",
+        type=float,
+        default=None,
+        help=(
+            "[Camera only] Override the camera input framerate.\n"
+            "Example: -f 10.0"
+        )
+    )
+    parser.add_argument(
+        "--draw-trail",
+        action="store_true",
+        help=(
+            "[Tracking only] Draw motion trails of tracked objects.\n"
+            "Uses the last 30 positions from the tracker history."
+        )
+    )
+    display_group = parser.add_mutually_exclusive_group(required=False)
+    display_group.add_argument(
+        "-cr","--camera-resolution",
+        type=str,
+        choices=["sd", "hd", "fhd"],
+        help="(Camera only) Input resolution: 'sd' (640x480), 'hd' (1280x720), or 'fhd' (1920x1080)."
+    )
+    display_group.add_argument(
+        "-or","--output-resolution",
+        nargs="+",
+        type=str,
+        help=(
+            "(Camera only) Output resolution. Use: 'sd', 'hd', 'fhd', "
+            "or custom size like '--output-resolution 1920 1080'."
+        )
+    )
+    parser.add_argument(
+        "--track",
+        action="store_true",
+        help="Enable object tracking across frames."
+    )
+    parser.add_argument(
+        "--show-fps",
+        action="store_true",
+        help="Enable FPS measurement and display."
+    )
+    parser.add_argument(
+        "--list-nets",
+        action="store_true",
+        help="List supported nets for this app and exit"
+    )
+    parser.add_argument(
+        "--list-inputs",
+        action="store_true",
+        help="List predefined sample inputs for this app and exit."
+    )
+    args = parser.parse_args()
 
-# -----------------------------
-# GitHub Push Configuration
-# -----------------------------
-ENABLE_GITHUB_PUSH = True
-PUSH_INTERVAL_SECONDS = 60
-SAVE_DETECTION_IMAGES = True
-MIN_DETECTIONS_TO_SAVE = 1
+    # Handle --list-nets and exit
+    if args.list_nets:
+        list_networks(APP_NAME)
+        sys.exit(0)
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+    # Handle --list-inputs and exit
+    if args.list_inputs:
+        list_inputs(APP_NAME)
+        sys.exit(0)
 
-try:
-    from github_push import setup_git, push_detection_event, push_to_github, init_repo
-    GITHUB_AVAILABLE = True
-    if ENABLE_GITHUB_PUSH:
-        setup_git()
-        init_repo(PROJECT_DIR)
-        print("✅ GitHub push enabled")
-except ImportError:
-    GITHUB_AVAILABLE = False
-    print("⚠️ GitHub push module not found. Auto-push disabled.")
+    args.net = resolve_net_arg(APP_NAME, args.net, ".")
+    args.input = resolve_input_arg(APP_NAME, args.input)
+    args.output_resolution = resolve_output_resolution_arg(args.output_resolution)
 
-last_push_time = 0
+    if not os.path.exists(args.labels):
+        raise FileNotFoundError(f"Labels file not found: {args.labels}")
 
-# -----------------------------
-# Check Hailo Platform
-# -----------------------------
-HAILO_AVAILABLE = False
-try:
-    from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
-    HAILO_AVAILABLE = True
-    print("✅ Hailo platform detected")
-except ImportError:
-    print("⚠️ Hailo platform library (hailo_platform) not found.")
-    print("   RUN: sudo apt install hailo-all && sudo reboot")
-    from ultralytics import YOLO
+    if args.output_dir is None:
+        args.output_dir = os.path.join(os.getcwd(), "output")
+    os.makedirs(args.output_dir, exist_ok=True)
 
-# -----------------------------
-# Paths
-# -----------------------------
-PT_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.pt"
-ONNX_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.onnx"
-# Use the full COCO HEF (person + vehicles + all classes)
-HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n_full.hef"  # <-- Make sure this matches the downloaded file
+    # If input is a comma-separated list of IPs, treat as multiple cameras
+    if args.input and "," in args.input:
+        args.input = [ip.strip() for ip in args.input.split(",")]
 
-# -----------------------------
-# Auto-download HEF if missing
-# -----------------------------
-def download_hef():
-    """Attempt to download HEF from Hailo Model Zoo or copy from system"""
-    print("🔍 Attempting to find/download HEF file...")
-    
-    # Option 1: Check system-installed models
-    system_hef_paths = [
-        "/usr/share/hailo-models/yolov8n.hef",
-        "/usr/share/hailo/models/yolov8n.hef",
-        "/opt/hailo/models/yolov8n.hef"
-    ]
-    
-    for path in system_hef_paths:
-        if os.path.isfile(path):
-            print(f"✅ Found system HEF: {path}")
-            try:
-                import shutil
-                shutil.copy(path, HEF_MODEL)
-                print(f"✅ Copied to: {HEF_MODEL}")
-                return True
-            except Exception as e:
-                print(f"⚠️ Failed to copy: {e}")
-    
-    # Option 2: Try to download from Hailo Model Zoo
-    hef_urls = [
-        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef",
-        "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/yolov8n_h8l.hef"
-    ]
-    
-    for url in hef_urls:
-        print(f"📥 Trying to download from: {url}")
-        try:
-            result = subprocess.run(
-                ["wget", "-q", "--show-progress", "-O", HEF_MODEL, url],
-                timeout=120
-            )
-            if result.returncode == 0 and os.path.isfile(HEF_MODEL) and os.path.getsize(HEF_MODEL) > 1000:
-                print(f"✅ Downloaded HEF successfully!")
-                return True
-        except Exception as e:
-            print(f"⚠️ Download failed: {e}")
-    
-    return False
+    return args
 
-# -----------------------------
-# Export PT -> ONNX if missing
-# -----------------------------
-# NOTE: This step is only needed if you're compiling the HEF yourself
-# The ONNX file is an intermediate format, NOT used by Hailo directly
-if not os.path.isfile(ONNX_MODEL):
-    print("⚠️ ONNX model not found, exporting from PT...")
-    try:
-        from ultralytics import YOLO
-        model = YOLO(PT_MODEL)
-        model.export(format="onnx", imgsz=640, dynamic=False)
-        print(f"✅ Exported ONNX model: {ONNX_MODEL}")
-    except Exception as e:
-        print(f"❌ Failed to export ONNX: {e}")
-        sys.exit(1)
 
-# -----------------------------
-# Check for HEF - Now with auto-download
-# -----------------------------
-if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
-    print("❌ HEF file not found. Attempting auto-download...")
-    if not download_hef():
-        print("=" * 60)
-        print("CRITICAL: Could not find or download HEF file!")
-        print("")
-        print("MANUAL DOWNLOAD - Run this command:")
-        print("  wget -O " + HEF_MODEL + " \\")
-        print("    https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef")
-        print("")
-        print("OR check Hailo's example models:")
-        print("  ls /usr/share/hailo-models/")
-        print("=" * 60)
-        print("Falling back to CPU inference (WILL BE VERY SLOW!).")
-        HAILO_AVAILABLE = False
 
-# -----------------------------
-# Model setup
-# -----------------------------
-target = None  # Initialize target to None
+def run_inference_pipeline(net, input, batch_size, labels, output_dir,
+          save_stream_output=False, camera_resolution=None, output_resolution=None,
+          enable_tracking=False, show_fps=False, framerate=None, draw_trail=False) -> None:
+    """
+    Initialize queues, HailoAsyncInference instance, and run the inference.
+    """
+    labels = get_labels(labels)
+    config_data = load_json_file("config.json")
 
-if HAILO_AVAILABLE and os.path.isfile(HEF_MODEL):
-    try:
-        hef = HEF(HEF_MODEL)
-        params = VDevice.create_params()
-        target = VDevice(params)
-        configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
-        network_group = target.configure(hef, configure_params)[0]
-        network_group_params = network_group.create_params()
-        input_info = network_group.get_input_vstream_infos()[0]
-        INPUT_HEIGHT = input_info.shape[1]
-        INPUT_WIDTH = input_info.shape[2]
-        print(f"✅ HEF loaded successfully. Input shape: ({INPUT_HEIGHT}, {INPUT_WIDTH})")
-    except Exception as e:
-        print(f"❌ Failed to load HEF or configure Hailo: {e}")
-        print("Falling back to CPU.")
-        HAILO_AVAILABLE = False
-        from ultralytics import YOLO
-        model = YOLO(PT_MODEL)
-        target = None
-
-if not HAILO_AVAILABLE:
-    print("⚠️ Setting up CPU inference (Ultralytics YOLO).")
-    print("   WARNING: CPU inference on Pi 5 is ~1-2 FPS. Get a HEF file for ~30+ FPS!")
-    try:
-        from ultralytics import YOLO
-        model = YOLO(PT_MODEL)
-    except Exception as e:
-        print(f"❌ Failed to load YOLO model: {e}")
-        print("   Make sure yolov8n.pt exists or run: pip install ultralytics")
-        sys.exit(1)
-
-# -----------------------------
-# Vehicle classes (using COCO subset)
-# -----------------------------
-# YOLOv8 default COCO classes: 1: 'Bicycle', 2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'
-vehicle_classes = {
-    1: "Bicycle",
-    2: "Car",
-    3: "Motorcycle",
-    5: "Bus",
-    7: "Truck"
-}
-# Add person class for display and labeling
-person_class_id = 0
-person_class_name = "Person"
-
-# -----------------------------
-# Camera info (using placeholders from original script)
-# -----------------------------
-# TODO: UPDATE THESE VALUES FOR YOUR CAMERAS!
-username = "admin"          # <-- Change to your camera's username
-password = ""               # <-- Change to your camera's password
-cameras = [
-    {"ip": "192.168.18.2", "name": "Camera 1"},   # <-- Update IP addresses
-    {"ip": "192.168.18.71", "name": "Camera 2"}   # <-- Update IP addresses
-]
-# NOTE: Test your camera URLs first with:
-#   ffplay "rtsp://admin:password@192.168.18.2:554/h264"
-
-frame_queues = [Queue(maxsize=1) for _ in cameras]
-stop_threads = False
-
-# -----------------------------
-# Hailo preprocessing
-# -----------------------------
-# The global variables INPUT_HEIGHT, INPUT_WIDTH are now set in the Hailo setup block
-# but initialized here for safety.
-INPUT_HEIGHT = 640
-INPUT_WIDTH = 640
-
-def preprocess_frame(frame):
-    # Resize the image to the network input size (e.g., 640x640)
-    resized = cv2.resize(frame, (INPUT_WIDTH, INPUT_HEIGHT))
-    # Convert BGR to RGB
-    rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    # Normalize pixel values (0-255 -> 0.0-1.0)
-    normalized = rgb.astype(np.float32) / 255.0
-    # Add batch dimension (HWC -> 1HWC)
-    input_data = np.expand_dims(normalized, axis=0)
-    return input_data
-
-def postprocess_results(output, frame_shape, conf_threshold=0.5):
-    # DEBUG: Print output shape and a sample
-    print(f"[DEBUG] Hailo output shape: {output.shape}")
-    print(f"[DEBUG] Hailo output sample: {output.flatten()[:10]}")
-
-    detections = []
-    h, w = frame_shape[:2]
-
-    # Typical YOLOv8 output: (N, 84) where 84 = 4 + 1 + 80
-    # [x, y, w, h, obj_conf, class_conf_0, ..., class_conf_79]
-    if len(output.shape) == 2 and output.shape[1] >= 85:
-        for row in output:
-            x, y, bw, bh = row[:4]
-            obj_conf = row[4]
-            class_confs = row[5:]
-            cls_id = int(np.argmax(class_confs))
-            cls_conf = class_confs[cls_id]
-            conf = obj_conf * cls_conf
-
-            # Only keep vehicle/person classes
-            if conf > conf_threshold and (cls_id in vehicle_classes or cls_id == person_class_id):  # 0: person
-                x1 = int((x - bw / 2) * w)
-                y1 = int((y - bh / 2) * h)
-                x2 = int((x + bw / 2) * w)
-                y2 = int((y + bh / 2) * h)
-                detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(conf), 'class_id': cls_id})
+    # Support multiple camera IPs
+    if isinstance(input, list):
+        # Multiple IP cameras
+        caps = []
+        images = []
+        for ip in input:
+            # OpenCV expects RTSP/HTTP/other protocol, adjust as needed
+            # Example: f"rtsp://{ip}/stream" or f"http://{ip}/video"
+            # Here, we assume RTSP:
+            cap, imgs = init_input_source(f"rtsp://{ip}/stream", batch_size, camera_resolution)
+            caps.append(cap)
+            images.append(imgs)
     else:
-        # Fallback: try to parse as before (legacy)
-        for detection in output:
-            if len(detection) >= 6:
-                x_center, y_center, width, height, conf, cls_id = detection[:6]
-                cls_id_int = int(cls_id)
-                if conf > conf_threshold and (cls_id_int in vehicle_classes or cls_id_int == person_class_id):
-                    x1 = int((x_center - width / 2) * w)
-                    y1 = int((y_center - height / 2) * h)
-                    x2 = int((x_center + width / 2) * w)
-                    y2 = int((y_center + height / 2) * h)
-                    detections.append({'bbox': (x1, y1, x2, y2), 'conf': conf, 'class_id': cls_id_int})
-    return detections
+        cap, images = init_input_source(input, batch_size, camera_resolution)
+        caps = [cap]
+        images = [images]
 
-def run_hailo_inference(frame):
-    input_data = preprocess_frame(frame)
-    
-    # The input data for Hailo is expected to be BHW(C) for a typical NCHW input.
-    # For a YOLO model, the input is usually BGR or RGB, NCHW (1, 3, 640, 640).
-    # Since preprocess_frame creates (1, 640, 640, 3) (NHWC), we need to ensure the Hailo HEF is expecting NHWC
-    # or transpose the NumPy array to NCHW before sending. Assuming HEF input expects NHWC or the
-    # platform handles the conversion, but typically deep learning expects NCHW.
-    # We will stick to the original HWC->1HWC logic in preprocess for now, as that's standard for Hailo.
-    
-    with InferVStreams(network_group, network_group_params) as infer_pipeline:
-        input_dict = {network_group.get_input_vstream_infos()[0].name: input_data}
-        output = infer_pipeline.infer(input_dict)
-    
-    # The output will be a dictionary of {output_vstream_name: np.array}
-    output_name = list(output.keys())[0]
-    raw_output = output[output_name][0]
-    
-    # The raw_output from the HEF needs to be interpreted. This is the most likely source of the SegFault/bad results
-    # if the format is wrong. The format is typically a flat tensor (e.g., 84 x 8400) that needs special decoding.
-    # Assuming the HEF was compiled with a custom post-processor or the raw output is simplified:
-    
-    return postprocess_results(raw_output, frame.shape)
+    tracker = None
+    fps_tracker = None
+    if show_fps:
+        fps_tracker = FrameRateTracker()
 
-def run_inference(frame):
-    try:
-        if HAILO_AVAILABLE:
-            return run_hailo_inference(frame)
-        else:
-            # CPU (Ultralytics YOLO) inference
-            results = model(frame, verbose=False)
-            detections = []
-            for result in results:
-                for box in result.boxes:
-                    cls_id = int(box.cls[0])
-                    # Only detect vehicle and person classes
-                    if cls_id in vehicle_classes or cls_id == person_class_id:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id})
-            return detections
-    except Exception as e:
-        print(f"⚠️ Inference failed: {e}")
-        return []
+    if enable_tracking:
+        tracker_config = config_data.get("visualization_params", {}).get("tracker", {})
+        tracker = BYTETracker(SimpleNamespace(**tracker_config))
 
-# -----------------------------
-# Camera threads
-# -----------------------------
-def camera_reader(cap, queue, cam_name):
-    global stop_threads, shutdown_requested
-    while not stop_threads and not shutdown_requested:
-        try:
-            ret, frame = cap.read()
-            if ret:
-                # Use a non-blocking queue put to keep frame latency low
-                if queue.full():
-                    try: queue.get_nowait()
-                    except: pass
-                queue.put(frame)
-            else:
-                time.sleep(0.05)
-        except Exception as e:
-            print(f"⚠️ Camera {cam_name} read error: {e}")
-            time.sleep(0.1)
+    input_queue = queue.Queue()
+    output_queue = queue.Queue()
 
-caps = []
-threads = []
-for i, cam in enumerate(cameras):
-    # Ensure correct RTSP URL format
-    rtsp_url = f"rtsp://{username}:{password}@{cam['ip']}:554/h264"
-    
-    # Use CAP_FFMPEG backend for better RTSP support
-    cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-    
-    # Optimization: Reduce internal buffer size and set FPS
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    cap.set(cv2.CAP_PROP_FPS, 15)
-    
-    if not cap.isOpened():
-        print(f"❌ Cannot connect to {cam['name']} at {cam['ip']}")
+    post_process_callback_fn = partial(
+        inference_result_handler, labels=labels,
+        config_data=config_data, tracker=tracker, draw_trail=draw_trail
+    )
+
+    hailo_inference = HailoInfer(net, batch_size)
+    height, width, _ = hailo_inference.get_input_shape()
+
+    # Preprocess thread for multiple cameras
+    def multi_preprocess(caps, images, framerate, batch_size, input_queue, width, height):
+        import itertools
+        # Round-robin over all cameras
+        while True:
+            batches = []
+            for cap, imgs in zip(caps, images):
+                # Use preprocess from toolbox for each camera
+                q = queue.Queue()
+                preprocess(imgs, cap, framerate, batch_size, q, width, height)
+                item = q.get()
+                if item is None:
+                    continue
+                batches.append(item)
+            if not batches:
+                break
+            # Flatten batches for all cameras
+            for batch in batches:
+                input_queue.put(batch)
+        input_queue.put(None)
+
+    if isinstance(input, list):
+        preprocess_thread = threading.Thread(
+            target=multi_preprocess, args=(caps, images, framerate, batch_size, input_queue, width, height)
+        )
+        postprocess_thread = threading.Thread(
+            target=visualize, args=(output_queue, None, save_stream_output,
+                                    output_dir, post_process_callback_fn,
+                                    fps_tracker, output_resolution)
+        )
     else:
-        print(f"✅ Connected to {cam['name']}")
-        t = threading.Thread(target=camera_reader, args=(cap, frame_queues[i], cam['name']), daemon=True)
-        t.start()
-        threads.append(t)
-    caps.append(cap)
+        preprocess_thread = threading.Thread(
+            target=preprocess, args=(images[0], caps[0], framerate, batch_size, input_queue, width, height)
+        )
+        postprocess_thread = threading.Thread(
+            target=visualize, args=(output_queue, caps[0], save_stream_output,
+                                    output_dir, post_process_callback_fn,
+                                    fps_tracker, output_resolution)
+        )
 
-# -----------------------------
-# Display window setup (with error handling)
-# -----------------------------
-display_available = False
-try:
-    cv2.namedWindow("Vehicle Detection", cv2.WINDOW_NORMAL)
-    display_available = True
-    print("✅ Display window created")
-except Exception as e:
-    print(f"⚠️ Cannot create display window: {e}")
-    print("   Running in headless mode (no display)")
+    infer_thread = threading.Thread(
+        target=infer, args=(hailo_inference, input_queue, output_queue)
+    )
 
-last_frames = [None for _ in cameras]
+    preprocess_thread.start()
+    postprocess_thread.start()
+    infer_thread.start()
 
-print("🚀 Starting vehicle detection...")
-print("   Press 'q' to quit (or Ctrl+C)")
+    if show_fps:
+        fps_tracker.start()
 
-# -----------------------------
-# Main loop with proper error handling
-# -----------------------------
-try:
-    while not shutdown_requested:
-        frames = []
-        current_time = time.time()
-        
-        for i, cam in enumerate(cameras):
-            try:
-                frame = frame_queues[i].get_nowait()
-                last_frames[i] = frame.copy()
-            except:
-                frame = last_frames[i]
+    preprocess_thread.join()
+    infer_thread.join()
+    output_queue.put(None)  # Signal process thread to exit
+    postprocess_thread.join()
 
-            if frame is None:
-                frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(frame, f"No Signal - {cam['name']}", (80, 240),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+    if show_fps:
+        logger.debug(fps_tracker.frame_rate_summary())
+
+    logger.success("Inference was successful!")
+    if save_stream_output or (isinstance(input, str) and input.lower() != "camera"):
+        logger.success(f'Results have been saved in {output_dir}')
+
+
+def infer(hailo_inference, input_queue, output_queue):
+    """
+    Main inference loop that pulls data from the input queue, runs asynchronous
+    inference, and pushes results to the output queue.
+
+    Each item in the input queue is expected to be a tuple:
+        (input_batch, preprocessed_batch)
+        - input_batch: Original frames (used for visualization or tracking)
+        - preprocessed_batch: Model-ready frames (e.g., resized, normalized)
+
+    Args:
+        hailo_inference (HailoInfer): The inference engine to run model predictions.
+        input_queue (queue.Queue): Provides (input_batch, preprocessed_batch) tuples.
+        output_queue (queue.Queue): Collects (input_frame, result) tuples for visualization.
+
+    Returns:
+        None
+    """
+    while True:
+        next_batch = input_queue.get()
+        if not next_batch:
+            break  # Stop signal received
+
+        input_batch, preprocessed_batch = next_batch
+
+        # Prepare the callback for handling the inference result
+        inference_callback_fn = partial(
+            inference_callback,
+            input_batch=input_batch,
+            output_queue=output_queue
+        )
+
+        # Run async inference
+        hailo_inference.run(preprocessed_batch, inference_callback_fn)
+
+    # Release resources and context
+    hailo_inference.close()
+
+
+def inference_callback(
+    completion_info,
+    bindings_list: list,
+    input_batch: list,
+    output_queue: queue.Queue
+) -> None:
+    """
+    infernce callback to handle inference results and push them to a queue.
+
+    Args:
+        completion_info: Hailo inference completion info.
+        bindings_list (list): Output bindings for each inference.
+        input_batch (list): Original input frames.
+        output_queue (queue.Queue): Queue to push output results to.
+    """
+    if completion_info.exception:
+        logger.error(f'Inference error: {completion_info.exception}')
+    else:
+        for i, bindings in enumerate(bindings_list):
+            if len(bindings._output_names) == 1:
+                result = bindings.output().get_buffer()
             else:
-                try:
-                    detections = run_inference(frame)
-                    
-                    for det in detections:
-                        x1, y1, x2, y2 = det['bbox']
-                        conf = det['conf']
-                        # Show "Person" for class 0, otherwise vehicle label
-                        if det['class_id'] == person_class_id:
-                            label = person_class_name
-                        else:
-                            label = vehicle_classes.get(det['class_id'], "Unknown")
-                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                        cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1-10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                    
-                    cv2.putText(frame, cam['name'], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                    
-                    # GitHub Push Logic
-                    if (ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE and 
-                        len(detections) >= MIN_DETECTIONS_TO_SAVE and
-                        (current_time - last_push_time) >= PUSH_INTERVAL_SECONDS):
-                        
-                        frame_to_save = frame.copy() if SAVE_DETECTION_IMAGES else None
-                        push_thread = threading.Thread(
-                            target=push_detection_event,
-                            args=(PROJECT_DIR, detections, cam['name'], frame_to_save, True),
-                            daemon=True
-                        )
-                        push_thread.start()
-                        last_push_time = current_time
-                except Exception as e:
-                    print(f"⚠️ Processing error: {e}")
+                result = {
+                    name: np.expand_dims(
+                        bindings.output(name).get_buffer(), axis=0
+                    )
+                    for name in bindings._output_names
+                }
+            output_queue.put((input_batch[i], result))
 
-            frames.append(frame)
 
-        # Display only if available
-        if display_available and frames and all(f is not None for f in frames):
-            try:
-                target_h = 480
-                resized = [cv2.resize(f, (int(f.shape[1]*target_h/f.shape[0]), target_h)) for f in frames]
-                combined = cv2.hconcat(resized)
-                cv2.imshow("Vehicle Detection", combined)
-            except Exception as e:
-                print(f"⚠️ Display error: {e}")
-                display_available = False
+def main() -> None:
+    """
+    Main function to run the script.
+    """
+    args = parse_args()
 
-        # Check for quit key
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
-            print("👋 Quit requested...")
-            break
+    run_inference_pipeline(args.net, args.input, args.batch_size, args.labels,
+          args.output_dir, args.save_stream_output, args.camera_resolution,
+          args.output_resolution, args.track, args.show_fps, args.framerate, args.draw_trail)
 
-except KeyboardInterrupt:
-    print("\n⚠️ Interrupted by user")
-except Exception as e:
-    print(f"❌ Main loop error: {e}")
 
-# -----------------------------
-# Cleanup (careful order to avoid segfault)
-# -----------------------------
-print("🧹 Cleaning up...")
 
-stop_threads = True
-shutdown_requested = True
 
-# Wait for threads to finish
-time.sleep(0.5)
-
-# Release cameras first
-for cap in caps:
-    try:
-        if cap.isOpened():
-            cap.release()
-    except:
-        pass
-
-# Destroy OpenCV windows
-try:
-    cv2.destroyAllWindows()
-    cv2.waitKey(1)  # Required to actually close windows
-except:
-    pass
-
-# Final push
-if ENABLE_GITHUB_PUSH and GITHUB_AVAILABLE:
-    print("📤 Final push to GitHub...")
-    try:
-        push_to_github(PROJECT_DIR, "Final detection results - session ended")
-    except Exception as e:
-        print(f"⚠️ Final push failed: {e}")
-
-# Release Hailo last
-if target is not None:
-    try:
-        target.release()
-    except Exception as e:
-        print(f"⚠️ Failed to release Hailo VDevice: {e}")
-        
-print("👋 Cleanup complete")
+if __name__ == "__main__":
+    main()
