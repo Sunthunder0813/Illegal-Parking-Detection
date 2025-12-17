@@ -1,2 +1,14 @@
 [HailoRT] [error] CHECK_SUCCESS failed with status=HAILO_INVALID_ARGUMENT(2)
 ⚠️ Hailo inference error: Invalid argument. See hailort.log for more information
+Converting yolov8n/input_layer1 numpy array to be C_CONTIGUOUS
+[HailoRT] [error] CHECK failed - Memory size of vstream yolov8n/input_layer1 does not match the frame count! (Expected 1228800, got 5760)
+[HailoRT] [error] CHECK_SUCCESS failed with status=HAILO_INVALID_ARGUMENT(2)
+⚠️ Hailo inference error: Invalid argument. See hailort.log for more information
+Converting yolov8n/input_layer1 numpy array to be C_CONTIGUOUS
+[HailoRT] [error] CHECK failed - Memory size of vstream yolov8n/input_layer1 does not match the frame count! (Expected 1228800, got 5760)
+[HailoRT] [error] CHECK_SUCCESS failed with status=HAILO_INVALID_ARGUMENT(2)
+⚠️ Hailo inference error: Invalid argument. See hailort.log for more information
+Converting yolov8n/input_layer1 numpy array to be C_CONTIGUOUS
+[HailoRT] [error] CHECK failed - Memory size of vstream yolov8n/input_layer1 does not match the frame count! (Expected 1228800, got 5760)
+[HailoRT] [error] CHECK_SUCCESS failed with status=HAILO_INVALID_ARGUMENT(2)
+⚠️ Hailo inference error: Invalid argument. See hailort.log for more information
