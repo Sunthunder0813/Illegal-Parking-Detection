@@ -314,6 +314,19 @@ detected_classes = {
     7: "Truck"
 }
 
+# COCO class names (80 classes, index 0 is 'person')
+COCO_CLASS_NAMES = [
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+    "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+    "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+    "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+    "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone",
+    "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush"
+]
+
 # -----------------------------
 # Camera info (using placeholders from original script)
 # -----------------------------
@@ -405,10 +418,15 @@ def run_inference(frame):
             for result in results:
                 for box in result.boxes:
                     cls_id = int(box.cls[0])
-                    # Only detect specified classes (vehicles + person)
-                    if cls_id in detected_classes:
+                    class_name = COCO_CLASS_NAMES[cls_id] if cls_id < len(COCO_CLASS_NAMES) else "unknown"
+                    # Detect person by class name (COCO index 0)
+                    if class_name == "person":
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id})
+                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
+                    # Or keep your existing logic for vehicles/person
+                    elif cls_id in detected_classes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
             return detections
     except Exception as e:
         print(f"⚠️ Inference failed: {e}")
