@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi 5 + Hailo-8L Accelerator - Illegal Parking Detection
-==================================================================
-This module provides vehicle detection with Philippine license plate recognition
-for illegal parking detection systems using Hailo-8L AI accelerator.
+Raspberry Pi 5 + Hailo-8L (13 TOPS) Accelerator - Illegal Parking Detection
+============================================================================
+This module provides vehicle and person detection with Philippine license plate 
+recognition for illegal parking detection systems using Hailo-8L AI accelerator.
+
+Hardware: Raspberry Pi 5 + Hailo-8L M.2 HAT (13 TOPS)
+Model: YOLOv8n compiled for Hailo-8L
 
 Features:
-- Car and Truck detection using YOLOv8 on Hailo-8L
+- Person, Car and Truck detection using YOLOv8n on Hailo-8L
 - Philippine license plate detection and OCR
 - Automatic fallback to CPU inference
 
@@ -31,23 +34,30 @@ import re
 from datetime import datetime
 
 # =============================================================================
-# Configuration
+# Configuration - Raspberry Pi 5 + Hailo-8L (13 TOPS)
 # =============================================================================
 
 # Model paths - Update these paths for your Raspberry Pi setup
 MODEL_DIR = Path(__file__).parent.resolve()
-HEF_MODEL_PATH = MODEL_DIR / "yolov8n.hef"
+
+# Hailo-8L specific HEF file (13 TOPS variant)
+HEF_MODEL_PATH = MODEL_DIR / "yolov8n_h8l.hef"  # Hailo-8L optimized
+HEF_MODEL_PATH_ALT = MODEL_DIR / "yolov8n.hef"  # Fallback name
+
 PT_MODEL_PATH = MODEL_DIR / "yolov8n.pt"
 ONNX_MODEL_PATH = MODEL_DIR / "yolov8n.onnx"
 
-# Default input size for YOLOv8
+# Default input size for YOLOv8n on Hailo-8L
 DEFAULT_INPUT_SIZE = (640, 640)
 
-# Confidence threshold for detections
-DEFAULT_CONFIDENCE_THRESHOLD = 0.5
+# Confidence threshold for detections (lowered for better person detection)
+DEFAULT_CONFIDENCE_THRESHOLD = 0.35
 
 # NMS (Non-Maximum Suppression) threshold
 DEFAULT_NMS_THRESHOLD = 0.45
+
+# Hailo-8L specific settings
+HAILO_8L_DEVICE_ID = "hailo8l"  # Device identifier for 13 TOPS variant
 
 # =============================================================================
 # COCO Classes - Vehicle Detection Focus
@@ -270,11 +280,11 @@ class InferenceResult:
 
 
 # =============================================================================
-# Hailo Platform Detection
+# Hailo Platform Detection - Hailo-8L (13 TOPS) Specific
 # =============================================================================
 
 def check_hailo_available() -> bool:
-    """Check if Hailo platform is available"""
+    """Check if Hailo-8L platform is available on Raspberry Pi 5"""
     try:
         from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
         return True
@@ -282,9 +292,34 @@ def check_hailo_available() -> bool:
         return False
 
 
+def check_hailo_device_info() -> Optional[Dict[str, str]]:
+    """Get Hailo-8L device information"""
+    try:
+        result = subprocess.run(
+            ["hailortcli", "fw-control", "identify"],
+            capture_output=True,
+            text=True,
+            timeout=10
+        )
+        if result.returncode == 0:
+            output = result.stdout.strip()
+            # Parse device info
+            info = {'raw': output}
+            if 'hailo8l' in output.lower() or '13' in output:
+                info['device'] = 'Hailo-8L'
+                info['tops'] = '13 TOPS'
+            elif 'hailo8' in output.lower():
+                info['device'] = 'Hailo-8'
+                info['tops'] = '26 TOPS'
+            return info
+    except Exception as e:
+        print(f"⚠️ Could not get Hailo device info: {e}")
+    return None
+
+
 def download_hef_model(target_path: Path) -> bool:
     """
-    Attempt to download or locate the HEF model file.
+    Attempt to download or locate the HEF model file for Hailo-8L.
     
     Args:
         target_path: Where to save the HEF file
@@ -292,14 +327,24 @@ def download_hef_model(target_path: Path) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    print("🔍 Attempting to find/download HEF file...")
+    print("🔍 Attempting to find/download Hailo-8L HEF file...")
     
-    # Option 1: Check system-installed models
+    # Option 1: Check system-installed models (Raspberry Pi 5 paths)
     system_hef_paths = [
+        # Hailo-8L specific paths on Raspberry Pi
+        "/usr/share/hailo-models/yolov8n_h8l.hef",
         "/usr/share/hailo-models/yolov8n.hef",
+        "/usr/share/hailo/models/yolov8n_h8l.hef",
         "/usr/share/hailo/models/yolov8n.hef",
+        "/opt/hailo/models/yolov8n_h8l.hef",
         "/opt/hailo/models/yolov8n.hef",
-        Path.home() / ".hailo" / "models" / "yolov8n.hef"
+        # Hailo examples path on RPi
+        "/home/pi/hailo-rpi5-examples/resources/yolov8n_h8l.hef",
+        "/home/pi/hailo-rpi5-examples/resources/yolov8n.hef",
+        Path.home() / "hailo-rpi5-examples" / "resources" / "yolov8n_h8l.hef",
+        Path.home() / "hailo-rpi5-examples" / "resources" / "yolov8n.hef",
+        Path.home() / ".hailo" / "models" / "yolov8n_h8l.hef",
+        Path.home() / ".hailo" / "models" / "yolov8n.hef",
     ]
     
     for path in system_hef_paths:
@@ -314,10 +359,13 @@ def download_hef_model(target_path: Path) -> bool:
             except Exception as e:
                 print(f"⚠️ Failed to copy: {e}")
     
-    # Option 2: Try to download from Hailo Model Zoo
+    # Option 2: Try to download from Hailo Model Zoo (Hailo-8L specific)
     hef_urls = [
+        # Hailo-8L (h8l) specific models
+        "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/yolov8n_h8l.hef",
         "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef",
-        "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l_rpi/yolov8n_h8l.hef"
+        # Fallback URLs
+        "https://hailo-csdata.s3.eu-west-2.amazonaws.com/resources/hefs/h8l/yolov8n.hef",
     ]
     
     for url in hef_urls:
@@ -333,6 +381,27 @@ def download_hef_model(target_path: Path) -> bool:
                 return True
         except Exception as e:
             print(f"⚠️ Download failed: {e}")
+    
+    # Option 3: Provide instructions for manual download
+    print("\n" + "=" * 60)
+    print("📋 Manual HEF Installation Instructions for Raspberry Pi 5:")
+    print("=" * 60)
+    print("""
+1. Install Hailo RPi5 examples (recommended):
+   git clone https://github.com/hailo-ai/hailo-rpi5-examples.git
+   cd hailo-rpi5-examples
+   ./download_resources.sh
+   
+   Then copy the HEF file:
+   cp resources/yolov8n_h8l.hef ~/Illegal-Parking-Detection/
+
+2. Or download directly from Hailo Model Zoo:
+   Visit: https://hailo.ai/developer-zone/model-zoo/
+   Download: YOLOv8n for Hailo-8L
+   
+3. Ensure the file is named 'yolov8n_h8l.hef' or 'yolov8n.hef'
+   and placed in the project directory.
+""")
     
     return False
 
@@ -655,13 +724,13 @@ class PhilippinePlateRecognizer:
 
 
 # =============================================================================
-# Main Detector Class
+# Main Detector Class - Optimized for Raspberry Pi 5 + Hailo-8L
 # =============================================================================
 
 class HailoDetector:
     """
-    Unified object detector that uses Hailo-8L accelerator when available,
-    with automatic fallback to CPU inference using Ultralytics YOLO.
+    Unified object detector optimized for Raspberry Pi 5 + Hailo-8L (13 TOPS).
+    Uses Hailo-8L accelerator when available, with automatic fallback to CPU.
     
     Includes integrated Philippine license plate recognition.
     
@@ -684,19 +753,28 @@ class HailoDetector:
         detect_all_objects: bool = False
     ):
         """
-        Initialize the detector.
+        Initialize the detector for Raspberry Pi 5 + Hailo-8L.
         
         Args:
-            hef_path: Path to the HEF model file (for Hailo)
+            hef_path: Path to the HEF model file (for Hailo-8L)
             pt_path: Path to the PyTorch model file (fallback)
             confidence_threshold: Minimum confidence for detections
             nms_threshold: NMS IoU threshold
-            target_classes: Dictionary of class_id -> class_name to detect (default: Car, Truck)
+            target_classes: Dictionary of class_id -> class_name to detect
             auto_download: Attempt to download HEF if missing
             enable_plate_recognition: Enable Philippine license plate OCR
             detect_all_objects: If True, detect persons, vehicles, and objects
         """
-        self.hef_path = Path(hef_path) if hef_path else HEF_MODEL_PATH
+        # Determine HEF path - check both naming conventions
+        if hef_path:
+            self.hef_path = Path(hef_path)
+        elif HEF_MODEL_PATH.is_file():
+            self.hef_path = HEF_MODEL_PATH
+        elif HEF_MODEL_PATH_ALT.is_file():
+            self.hef_path = HEF_MODEL_PATH_ALT
+        else:
+            self.hef_path = HEF_MODEL_PATH
+        
         self.pt_path = Path(pt_path) if pt_path else PT_MODEL_PATH
         self.confidence_threshold = confidence_threshold
         self.nms_threshold = nms_threshold
@@ -714,6 +792,7 @@ class HailoDetector:
         
         # Runtime state
         self.hailo_available = False
+        self.hailo_device_info = None
         self.input_height = DEFAULT_INPUT_SIZE[0]
         self.input_width = DEFAULT_INPUT_SIZE[1]
         
@@ -722,6 +801,8 @@ class HailoDetector:
         self._target = None
         self._network_group = None
         self._network_group_params = None
+        self._input_vstream_info = None
+        self._output_vstream_info = None
         
         # CPU fallback
         self._yolo_model = None
@@ -733,26 +814,47 @@ class HailoDetector:
         self._initialize(auto_download)
     
     def _initialize(self, auto_download: bool = True):
-        """Initialize the appropriate inference backend"""
+        """Initialize the appropriate inference backend for Raspberry Pi 5"""
+        
+        # Check Hailo device info first
+        self.hailo_device_info = check_hailo_device_info()
+        if self.hailo_device_info:
+            print(f"🔧 Detected Hailo device: {self.hailo_device_info.get('device', 'Unknown')}")
+            print(f"   Performance: {self.hailo_device_info.get('tops', 'Unknown')}")
         
         # Try Hailo first
         if check_hailo_available():
-            if not self.hef_path.is_file() and auto_download:
-                print("⚠️ HEF file not found. Attempting auto-download...")
-                download_hef_model(self.hef_path)
+            # Check both possible HEF file names
+            hef_exists = self.hef_path.is_file()
+            if not hef_exists and HEF_MODEL_PATH_ALT.is_file():
+                self.hef_path = HEF_MODEL_PATH_ALT
+                hef_exists = True
             
-            if self.hef_path.is_file():
+            if not hef_exists and auto_download:
+                print("⚠️ HEF file not found. Attempting auto-download...")
+                if download_hef_model(self.hef_path):
+                    hef_exists = True
+                elif download_hef_model(HEF_MODEL_PATH_ALT):
+                    self.hef_path = HEF_MODEL_PATH_ALT
+                    hef_exists = True
+            
+            if hef_exists:
                 try:
                     self._init_hailo()
                     self.hailo_available = True
-                    print(f"✅ Hailo-8L initialized successfully")
+                    print(f"✅ Hailo-8L (13 TOPS) initialized successfully")
+                    print(f"   Model: {self.hef_path.name}")
                     print(f"   Input shape: ({self.input_height}, {self.input_width})")
                     return
                 except Exception as e:
                     print(f"❌ Failed to initialize Hailo: {e}")
+                    import traceback
+                    traceback.print_exc()
         else:
             print("⚠️ Hailo platform not available")
-            print("   Install with: sudo apt install hailo-all && sudo reboot")
+            print("   For Raspberry Pi 5 with Hailo-8L M.2 HAT:")
+            print("   sudo apt update && sudo apt install hailo-all")
+            print("   sudo reboot")
         
         # Fallback to CPU
         self._init_cpu_fallback()
@@ -761,6 +863,41 @@ class HailoDetector:
         if self.enable_plate_recognition:
             self._init_plate_recognition()
     
+    def _init_hailo(self):
+        """Initialize Hailo-8L inference pipeline for Raspberry Pi 5"""
+        from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
+        
+        print(f"🔧 Loading HEF model: {self.hef_path}")
+        self._hef = HEF(str(self.hef_path))
+        
+        # Create VDevice with Hailo-8L specific params
+        params = VDevice.create_params()
+        self._target = VDevice(params)
+        
+        # Configure for PCIe interface (M.2 HAT uses PCIe)
+        configure_params = ConfigureParams.create_from_hef(
+            self._hef, 
+            interface=HailoStreamInterface.PCIe
+        )
+        self._network_group = self._target.configure(self._hef, configure_params)[0]
+        self._network_group_params = self._network_group.create_params()
+        
+        # Get input/output stream info
+        self._input_vstream_info = self._network_group.get_input_vstream_infos()[0]
+        self._output_vstream_info = self._network_group.get_output_vstream_infos()
+        
+        # Get input dimensions from HEF
+        self.input_height = self._input_vstream_info.shape[1]
+        self.input_width = self._input_vstream_info.shape[2]
+        self._input_name = self._input_vstream_info.name
+        
+        print(f"   Input stream: {self._input_name}")
+        print(f"   Output streams: {len(self._output_vstream_info)}")
+        
+        # Initialize plate recognition for Hailo too
+        if self.enable_plate_recognition:
+            self._init_plate_recognition()
+
     def _init_plate_recognition(self):
         """Initialize Philippine license plate recognizer"""
         try:
@@ -769,31 +906,6 @@ class HailoDetector:
         except Exception as e:
             print(f"⚠️ Plate recognition init failed: {e}")
             self._plate_recognizer = None
-    
-    def _init_hailo(self):
-        """Initialize Hailo inference pipeline"""
-        from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
-        
-        self._hef = HEF(str(self.hef_path))
-        params = VDevice.create_params()
-        self._target = VDevice(params)
-        
-        configure_params = ConfigureParams.create_from_hef(
-            self._hef, 
-            interface=HailoStreamInterface.PCIe
-        )
-        self._network_group = self._target.configure(self._hef, configure_params)[0]
-        self._network_group_params = self._network_group.create_params()
-        
-        # Get input dimensions
-        input_info = self._network_group.get_input_vstream_infos()[0]
-        self.input_height = input_info.shape[1]
-        self.input_width = input_info.shape[2]
-        self._input_name = input_info.name
-        
-        # Initialize plate recognition for Hailo too
-        if self.enable_plate_recognition:
-            self._init_plate_recognition()
     
     def _init_cpu_fallback(self):
         """Initialize CPU-based YOLO inference"""
@@ -959,7 +1071,7 @@ class HailoDetector:
         return []
     
     def _run_hailo_inference(self, frame: np.ndarray) -> List[Detection]:
-        """Run inference on Hailo accelerator"""
+        """Run inference on Hailo-8L accelerator (Raspberry Pi 5)"""
         from hailo_platform import InferVStreams
         
         input_data = self.preprocess(frame)
@@ -968,9 +1080,17 @@ class HailoDetector:
             input_dict = {self._input_name: input_data}
             output = infer_pipeline.infer(input_dict)
         
-        # Get raw output
-        output_name = list(output.keys())[0]
-        raw_output = output[output_name]
+        # Get raw output - handle multiple output layers
+        if len(output) == 1:
+            output_name = list(output.keys())[0]
+            raw_output = output[output_name]
+        else:
+            # YOLOv8 may have multiple outputs - concatenate them
+            raw_outputs = list(output.values())
+            raw_output = np.concatenate([o.reshape(o.shape[0], -1, o.shape[-1]) 
+                                         for o in raw_outputs], axis=1)
+            if raw_output.ndim == 3:
+                raw_output = raw_output[0]  # Remove batch dim
         
         # Post-process
         return self.postprocess(raw_output, frame.shape[:2])
@@ -1425,24 +1545,22 @@ class IllegalParkingDetector:
 # =============================================================================
 
 def get_system_info() -> Dict[str, Any]:
-    """Get system information for debugging"""
+    """Get system information for Raspberry Pi 5 + Hailo-8L debugging"""
     info = {
         'hailo_available': check_hailo_available(),
-        'hef_exists': HEF_MODEL_PATH.is_file(),
+        'hailo_device': check_hailo_device_info(),
+        'hef_exists': HEF_MODEL_PATH.is_file() or HEF_MODEL_PATH_ALT.is_file(),
+        'hef_path': str(HEF_MODEL_PATH if HEF_MODEL_PATH.is_file() else HEF_MODEL_PATH_ALT),
         'pt_exists': PT_MODEL_PATH.is_file(),
+        'platform': 'Raspberry Pi 5 + Hailo-8L (13 TOPS)',
     }
     
-    # Check Hailo device
+    # Check for Raspberry Pi
     try:
-        result = subprocess.run(
-            ["hailortcli", "fw-control", "identify"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        info['hailo_device'] = result.stdout.strip() if result.returncode == 0 else None
+        with open('/proc/device-tree/model', 'r') as f:
+            info['rpi_model'] = f.read().strip()
     except:
-        info['hailo_device'] = None
+        info['rpi_model'] = 'Unknown'
     
     return info
 
@@ -1487,17 +1605,24 @@ def benchmark_detector(detector: HailoDetector, num_frames: int = 100) -> Dict[s
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("🚗 Illegal Parking Detection - Philippine Plate Recognition")
+    print("🚗 Raspberry Pi 5 + Hailo-8L (13 TOPS) Detection System")
+    print("   Illegal Parking Detection with Philippine Plate Recognition")
     print("=" * 60)
     
     # Print system info
     print("\n📊 System Information:")
     info = get_system_info()
     for key, value in info.items():
-        print(f"   {key}: {value}")
+        if isinstance(value, dict):
+            print(f"   {key}:")
+            for k, v in value.items():
+                print(f"      {k}: {v}")
+        else:
+            print(f"   {key}: {value}")
     
     # Print target classes
-    print(f"\n🎯 Target Classes: {VEHICLE_CLASSES}")
+    print(f"\n🎯 Default Target Classes (Vehicles): {VEHICLE_CLASSES}")
+    print(f"🎯 All Target Classes: {ALL_TARGET_CLASSES}")
     
     # Initialize detector
     print("\n🔧 Initializing detector...")

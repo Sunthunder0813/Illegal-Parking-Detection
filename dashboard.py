@@ -9,7 +9,7 @@ from flask import Flask, render_template, jsonify, Response
 
 # Import the detector
 try:
-    from models import HailoDetector, Detection, VEHICLE_CLASSES, ALL_TARGET_CLASSES
+    from models import HailoDetector, Detection, VEHICLE_CLASSES, ALL_TARGET_CLASSES, get_system_info
     DETECTOR_AVAILABLE = True
 except ImportError as e:
     print(f"⚠️ Could not import detector: {e}")
@@ -45,23 +45,43 @@ detector = None
 detector_lock = threading.Lock()
 
 def init_detector():
-    """Initialize the object detector"""
+    """Initialize the object detector for Raspberry Pi 5 + Hailo-8L"""
     global detector
     if not DETECTOR_AVAILABLE:
         print("⚠️ Detector not available - running without detection")
         return False
     
     try:
-        print("🔧 Initializing object detector...")
+        print("🔧 Initializing Hailo-8L object detector...")
+        print("   Hardware: Raspberry Pi 5 + Hailo-8L (13 TOPS)")
+        
+        # Get system info first
+        try:
+            sys_info = get_system_info()
+            print(f"   Hailo Available: {sys_info.get('hailo_available', False)}")
+            if sys_info.get('hailo_device'):
+                print(f"   Device: {sys_info['hailo_device'].get('device', 'Unknown')}")
+        except:
+            pass
+        
         detector = HailoDetector(
             detect_all_objects=True,  # Enable detection of persons, vehicles, objects
             enable_plate_recognition=True,
-            confidence_threshold=0.4  # Lower threshold to catch more objects
+            confidence_threshold=0.35  # Optimized for Hailo-8L YOLOv8n
         )
-        print("✅ Object detector initialized successfully")
+        
+        if detector.hailo_available:
+            print("✅ Hailo-8L object detector initialized successfully")
+            print(f"   Using: Hailo-8L accelerator (13 TOPS)")
+        else:
+            print("⚠️ Running on CPU (slower) - Hailo-8L not available")
+            print("   For best performance, ensure Hailo-8L is properly installed")
+        
         return True
     except Exception as e:
         print(f"❌ Failed to initialize detector: {e}")
+        import traceback
+        traceback.print_exc()
         detector = None
         return False
 
@@ -581,6 +601,30 @@ def api_cameras_reconnect_all():
         'success': True,
         'message': 'Reconnecting all cameras...'
     })
+
+# Add new API endpoint for system info
+@app.route("/api/system/info")
+def api_system_info():
+    """Get system and Hailo-8L status information"""
+    info = {
+        'detector_available': DETECTOR_AVAILABLE,
+        'detector_initialized': detector is not None,
+        'hailo_active': detector.hailo_available if detector else False,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    if DETECTOR_AVAILABLE:
+        try:
+            sys_info = get_system_info()
+            info.update(sys_info)
+        except:
+            pass
+    
+    if detector:
+        info['confidence_threshold'] = detector.confidence_threshold
+        info['input_size'] = f"{detector.input_width}x{detector.input_height}"
+    
+    return jsonify(info)
 
 # ============== MAIN ==============
 
