@@ -5,11 +5,15 @@ import numpy as np
 import threading
 from queue import Queue
 from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
+import urllib.request
 
 # -----------------------------
 # CONFIGURATION
 # -----------------------------
-HEF_PATH = "Illegal-Parking-Detection/yolov8n.hef"
+# HEF file download URL
+HEF_URL = "https://example.com/path/to/yolov8n.hef"  # <-- Replace with your actual HEF file URL
+HEF_LOCAL_PATH = "yolov8n.hef"
+
 CAMERAS = [
     {"ip": "192.168.18.2", "name": "Camera 1"},
     {"ip": "192.168.18.71", "name": "Camera 2"}
@@ -20,6 +24,18 @@ CONF_THRESHOLD = 0.3
 
 # COCO classes (we use 0=person, 2=car)
 LABELS = {0: "Person", 2: "Car"}
+
+# -----------------------------
+# Download HEF if not present
+# -----------------------------
+if not os.path.exists(HEF_LOCAL_PATH):
+    print(f"HEF file not found. Downloading from {HEF_URL} ...")
+    try:
+        urllib.request.urlretrieve(HEF_URL, HEF_LOCAL_PATH)
+        print("✅ HEF file downloaded successfully.")
+    except Exception as e:
+        print(f"❌ Failed to download HEF file: {e}")
+        exit(1)
 
 # -----------------------------
 # THREADING QUEUES
@@ -71,7 +87,7 @@ def camera_reader(cam_index, cam_info):
 # -----------------------------
 # LOAD HEF + CONFIGURE DEVICE
 # -----------------------------
-hef = HEF(HEF_PATH)
+hef = HEF(HEF_LOCAL_PATH)
 vdevice_params = VDevice.create_params()
 device = VDevice(vdevice_params)
 configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
