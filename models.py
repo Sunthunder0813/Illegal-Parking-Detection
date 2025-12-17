@@ -80,16 +80,13 @@ VEHICLE_CLASSES = {
     7: "Truck"
 }
 
-# All detectable classes (commonly needed ones)
-ALL_DETECTION_CLASSES = {
-    0: "Person",
+# Extended vehicle classes (if you want to include more vehicle types)
+EXTENDED_VEHICLE_CLASSES = {
     1: "Bicycle",
     2: "Car",
     3: "Motorcycle",
     5: "Bus",
-    7: "Truck",
-    9: "Traffic Light",
-    11: "Stop Sign",
+    7: "Truck"
 }
 
 # =============================================================================
@@ -685,16 +682,8 @@ class HailoDetector:
         # Plate recognizer
         self._plate_recognizer = None
         
-        # Device type tracking
-        self._device_type = "unknown"
-        
         # Initialize
         self._initialize(auto_download)
-    
-    @property
-    def device_type(self) -> str:
-        """Return the device type being used for inference"""
-        return self._device_type
     
     def _initialize(self, auto_download: bool = True):
         """Initialize the appropriate inference backend"""
@@ -709,7 +698,6 @@ class HailoDetector:
                 try:
                     self._init_hailo()
                     self.hailo_available = True
-                    self._device_type = "Hailo-8L"
                     print(f"✅ Hailo-8L initialized successfully")
                     print(f"   Input shape: ({self.input_height}, {self.input_width})")
                     return
@@ -721,7 +709,6 @@ class HailoDetector:
         
         # Fallback to CPU
         self._init_cpu_fallback()
-        self._device_type = "CPU (Ultralytics)"
         
         # Initialize plate recognition
         if self.enable_plate_recognition:
@@ -941,11 +928,8 @@ class HailoDetector:
         # Post-process
         return self.postprocess(raw_output, frame.shape[:2])
     
-    def _run_cpu_inference(self, frame: np.ndarray, target_classes: Optional[Dict[int, str]] = None) -> List[Detection]:
+    def _run_cpu_inference(self, frame: np.ndarray) -> List[Detection]:
         """Run inference on CPU using Ultralytics YOLO"""
-        if target_classes is None:
-            target_classes = self.target_classes
-            
         results = self._yolo_model(frame, verbose=False)
         
         detections = []
@@ -957,14 +941,11 @@ class HailoDetector:
                 if conf < self.confidence_threshold:
                     continue
                 
-                # If target_classes is None or empty, detect all; otherwise filter
-                if target_classes and cls_id not in target_classes:
+                if cls_id not in self.target_classes:
                     continue
                 
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                label = COCO_CLASSES.get(cls_id, "Unknown")
-                if target_classes and cls_id in target_classes:
-                    label = target_classes.get(cls_id, label)
+                label = self.target_classes.get(cls_id, COCO_CLASSES.get(cls_id, "Unknown"))
                 
                 detections.append(Detection(
                     bbox=(x1, y1, x2, y2),
@@ -975,37 +956,26 @@ class HailoDetector:
         
         return detections
     
-    def detect(self, frame: np.ndarray, recognize_plates: bool = True, vehicle_only: bool = True) -> List[Detection]:
+    def detect(self, frame: np.ndarray, recognize_plates: bool = True) -> List[Detection]:
         """
         Run object detection on a frame with optional plate recognition.
         
         Args:
             frame: BGR image from OpenCV
             recognize_plates: Whether to run plate OCR on detected vehicles
-            vehicle_only: If True, only detect vehicles; if False, detect all classes
             
         Returns:
             List of Detection objects with plate info if available
         """
         try:
-            # Determine which classes to detect
-            target_classes = self.target_classes if vehicle_only else None
-            
             if self.hailo_available:
                 detections = self._run_hailo_inference(frame)
-                # Filter if vehicle_only
-                if vehicle_only:
-                    detections = [d for d in detections if d.class_id in self.target_classes]
             else:
-                detections = self._run_cpu_inference(frame, target_classes)
+                detections = self._run_cpu_inference(frame)
             
-            # Run plate recognition on vehicle detections only
+            # Run plate recognition on each detection
             if recognize_plates and self._plate_recognizer is not None:
-                vehicle_detections = [d for d in detections if d.class_id in VEHICLE_CLASSES]
-                vehicle_detections = self._recognize_plates(frame, vehicle_detections)
-                # Merge back
-                non_vehicle_detections = [d for d in detections if d.class_id not in VEHICLE_CLASSES]
-                detections = vehicle_detections + non_vehicle_detections
+                detections = self._recognize_plates(frame, detections)
             
             # Add timestamp to all detections
             now = datetime.now()
@@ -1018,19 +988,66 @@ class HailoDetector:
             print(f"⚠️ Inference error: {e}")
             return []
     
-    def detect_all(self, frame: np.ndarray, recognize_plates: bool = False) -> List[Detection]:
+    def _recognize_plates(self, frame: np.ndarray, detections: List[Detection]) -> List[Detection]:
         """
-        Detect all objects (persons, vehicles, etc.) in a frame.
+        Run plate recognition on detected vehicles.
+        
+        Args:
+            frame: Original frame
+            detections: List of vehicle detections
+            
+        Returns:
+            Detections with plate info populated
+        """
+        for det in detections:
+            try:
+                # Crop vehicle region
+                x1, y1, x2, y2 = det.bbox
+                vehicle_crop = frame[y1:y2, x1:x2]
+                
+                if vehicle_crop.size == 0:
+                    continue
+                
+                # Recognize plate
+                plate_text, confidence, plate_bbox = self._plate_recognizer.recognize_from_vehicle(vehicle_crop)
+                
+                if plate_text:
+                    det.plate_number = plate_text
+                    det.plate_confidence = confidence
+                    
+                    # Convert plate bbox to absolute coordinates
+                    if plate_bbox:
+                        px1, py1, px2, py2 = plate_bbox
+                        det.plate_bbox = (x1 + px1, y1 + py1, x1 + px2, y1 + py2)
+                        
+            except Exception as e:
+                # Don't fail detection if plate recognition fails
+                pass
+        
+        return detections
+    
+    def detect_with_timing(self, frame: np.ndarray, recognize_plates: bool = True) -> InferenceResult:
+        """
+        Run detection with timing information.
         
         Args:
             frame: BGR image from OpenCV
-            recognize_plates: Whether to run plate OCR on detected vehicles
+            recognize_plates: Whether to run plate OCR
             
         Returns:
-            List of Detection objects for all detected classes
+            InferenceResult with detections and timing
         """
-        return self.detect(frame, recognize_plates=recognize_plates, vehicle_only=False)
-
+        import time
+        start = time.perf_counter()
+        detections = self.detect(frame, recognize_plates=recognize_plates)
+        elapsed = (time.perf_counter() - start) * 1000
+        
+        return InferenceResult(
+            detections=detections,
+            inference_time_ms=elapsed,
+            frame_shape=frame.shape
+        )
+    
     def draw_detections(
         self,
         frame: np.ndarray,
