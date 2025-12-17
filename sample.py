@@ -7,7 +7,6 @@ import cv2
 import numpy as np
 import threading
 from queue import Queue
-import sys
 import time
 import subprocess
 import signal
@@ -89,29 +88,25 @@ try:
 
     HAILO_AVAILABLE = True
     print("✅ Hailo platform detected")
-except ImportError:
-    print("⚠️ Hailo platform or GStreamer not available. CPU fallback will be used.")
+except ImportError as e:
+    print(f"⚠️ Hailo platform or GStreamer not available: {e}. CPU fallback will be used.")
     from ultralytics import YOLO
 
 # =============================================================================
-# Optional HEF auto-download
+# HEF auto-download
 # =============================================================================
 def download_hef():
     """Download HEF file if missing"""
     if os.path.isfile(HEF_MODEL):
         return True
-
-    urls = [
-        "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef"
-    ]
-    for url in urls:
-        try:
-            subprocess.run(["wget", "-q", "-O", HEF_MODEL, url], timeout=120)
-            if os.path.isfile(HEF_MODEL) and os.path.getsize(HEF_MODEL) > 1000:
-                print(f"✅ HEF downloaded: {HEF_MODEL}")
-                return True
-        except Exception as e:
-            print(f"⚠️ Failed to download HEF: {e}")
+    url = "https://hailo-model-zoo.s3.eu-west-2.amazonaws.com/ModelZoo/Compiled/v2.13.0/hailo8l/yolov8n.hef"
+    try:
+        subprocess.run(["wget", "-q", "-O", HEF_MODEL, url], timeout=120, check=True)
+        if os.path.isfile(HEF_MODEL) and os.path.getsize(HEF_MODEL) > 1000:
+            print(f"✅ HEF downloaded: {HEF_MODEL}")
+            return True
+    except Exception as e:
+        print(f"⚠️ Failed to download HEF: {e}")
     return False
 
 if HAILO_AVAILABLE and not os.path.isfile(HEF_MODEL):
@@ -140,7 +135,7 @@ if HAILO_AVAILABLE:
         return Gst.PadProbeReturn.OK
 
 # =============================================================================
-# CPU fallback: Load YOLO
+# CPU fallback
 # =============================================================================
 if not HAILO_AVAILABLE:
     print("⚠️ Using CPU inference (Ultralytics YOLO)")
@@ -148,7 +143,7 @@ if not HAILO_AVAILABLE:
 
 def run_inference(frame):
     if HAILO_AVAILABLE:
-        # Hailo inference handled via GStreamer callback
+        # Hailo inference handled by GStreamer callback
         return []
     else:
         # CPU inference
@@ -217,6 +212,7 @@ if __name__ == "__main__":
         # Start Hailo GStreamer pipeline
         user_data = UserAppCallback()
         app = GStreamerDetectionApp(hailo_gst_callback, user_data)
+        print("🚀 Running Hailo inference...")
         try:
             app.run()
         except KeyboardInterrupt:
