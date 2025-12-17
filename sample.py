@@ -3,6 +3,28 @@
 # Vehicle detection with multi-camera support
 
 # =============================================================================
+# REQUIRED SUDO COMMANDS FOR RASPBERRY PI 5 SETUP
+# =============================================================================
+# 1. Update package list:
+#    sudo apt update
+#
+# 2. Install Hailo software and dependencies:
+#    sudo apt install hailo-all
+#
+# 3. (Optional but recommended) Reboot after Hailo install:
+#    sudo reboot
+#
+# 4. (If you need ffmpeg for RTSP testing)
+#    sudo apt install ffmpeg
+#
+# 5. (If you want to use pip for Python dependencies)
+#    sudo apt install python3-pip
+#
+# 6. (If you want to use git for GitHub push)
+#    sudo apt install git
+# =============================================================================
+
+# =============================================================================
 # FIX FOR SEGMENTATION FAULT AND QT ERRORS
 # =============================================================================
 # Set environment variables BEFORE importing cv2
@@ -280,10 +302,11 @@ if not HAILO_AVAILABLE:
         sys.exit(1)
 
 # -----------------------------
-# Vehicle classes (using COCO subset)
+# Detected classes (vehicles + person)
 # -----------------------------
-# YOLOv8 default COCO classes: 1: 'Bicycle', 2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'
-vehicle_classes = {
+# COCO: 0: 'Person', 1: 'Bicycle', 2: 'Car', 3: 'Motorcycle', 5: 'Bus', 7: 'Truck'
+detected_classes = {
+    0: "Person",
     1: "Bicycle",
     2: "Car",
     3: "Motorcycle",
@@ -338,14 +361,12 @@ def postprocess_results(output, frame_shape, conf_threshold=0.5):
     for detection in output:
         if len(detection) >= 6:
             x_center, y_center, width, height, conf, cls_id = detection[:6]
-            
             cls_id_int = int(cls_id)
-            if conf > conf_threshold and cls_id_int in vehicle_classes:
+            if conf > conf_threshold and cls_id_int in detected_classes:
                 x1 = int((x_center - width / 2) * w)
                 y1 = int((y_center - height / 2) * h)
                 x2 = int((x_center + width / 2) * w)
                 y2 = int((y_center + height / 2) * h)
-                
                 detections.append({'bbox': (x1, y1, x2, y2), 'conf': conf, 'class_id': cls_id_int})
     return detections
 
@@ -384,8 +405,8 @@ def run_inference(frame):
             for result in results:
                 for box in result.boxes:
                     cls_id = int(box.cls[0])
-                    # Only detect vehicle classes
-                    if cls_id in vehicle_classes:
+                    # Only detect specified classes (vehicles + person)
+                    if cls_id in detected_classes:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id})
             return detections
@@ -478,7 +499,7 @@ try:
                     for det in detections:
                         x1, y1, x2, y2 = det['bbox']
                         conf = det['conf']
-                        label = vehicle_classes.get(det['class_id'], "Unknown")
+                        label = detected_classes.get(det['class_id'], "Unknown")
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1-10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
