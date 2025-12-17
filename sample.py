@@ -291,6 +291,9 @@ vehicle_classes = {
     5: "Bus",
     7: "Truck"
 }
+# Add person class for display and labeling
+person_class_id = 0
+person_class_name = "Person"
 
 # -----------------------------
 # Camera info (using placeholders from original script)
@@ -347,7 +350,7 @@ def postprocess_results(output, frame_shape, conf_threshold=0.5):
             conf = obj_conf * cls_conf
 
             # Only keep vehicle/person classes
-            if conf > conf_threshold and (cls_id in vehicle_classes or cls_id == 0):  # 0: person
+            if conf > conf_threshold and (cls_id in vehicle_classes or cls_id == person_class_id):  # 0: person
                 x1 = int((x - bw / 2) * w)
                 y1 = int((y - bh / 2) * h)
                 x2 = int((x + bw / 2) * w)
@@ -359,7 +362,7 @@ def postprocess_results(output, frame_shape, conf_threshold=0.5):
             if len(detection) >= 6:
                 x_center, y_center, width, height, conf, cls_id = detection[:6]
                 cls_id_int = int(cls_id)
-                if conf > conf_threshold and cls_id_int in vehicle_classes:
+                if conf > conf_threshold and (cls_id_int in vehicle_classes or cls_id_int == person_class_id):
                     x1 = int((x_center - width / 2) * w)
                     y1 = int((y_center - height / 2) * h)
                     x2 = int((x_center + width / 2) * w)
@@ -402,8 +405,8 @@ def run_inference(frame):
             for result in results:
                 for box in result.boxes:
                     cls_id = int(box.cls[0])
-                    # Only detect vehicle classes
-                    if cls_id in vehicle_classes:
+                    # Only detect vehicle and person classes
+                    if cls_id in vehicle_classes or cls_id == person_class_id:
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
                         detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id})
             return detections
@@ -496,7 +499,11 @@ try:
                     for det in detections:
                         x1, y1, x2, y2 = det['bbox']
                         conf = det['conf']
-                        label = vehicle_classes.get(det['class_id'], "Unknown")
+                        # Show "Person" for class 0, otherwise vehicle label
+                        if det['class_id'] == person_class_id:
+                            label = person_class_name
+                        else:
+                            label = vehicle_classes.get(det['class_id'], "Unknown")
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(frame, f"{label} {conf:.2f}", (x1, y1-10),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
