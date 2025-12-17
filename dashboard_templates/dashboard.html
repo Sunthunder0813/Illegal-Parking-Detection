@@ -1,0 +1,1063 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚗 Illegal Parking Monitor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            min-height: 100vh;
+            color: #fff;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            padding: 15px 0 25px;
+        }
+        
+        header h1 {
+            font-size: 2.2rem;
+            margin-bottom: 10px;
+        }
+        
+        .demo-badge {
+            background: #f39c12;
+            color: #000;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        
+        .last-updated {
+            color: #888;
+            margin-top: 10px;
+            font-size: 0.9rem;
+        }
+        
+        /* Camera Section */
+        .camera-section {
+            margin-bottom: 30px;
+        }
+        
+        .camera-section h2 {
+            margin-bottom: 20px;
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+        }
+        
+        /* 2 Equal Main Cameras Layout */
+        .camera-layout {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            height: auto;
+        }
+        
+        .camera-card {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            overflow: hidden;
+            position: relative;
+            transition: all 0.3s ease;
+        }
+        
+        .camera-card:hover {
+            background: rgba(255, 255, 255, 0.08);
+            transform: scale(1.005);
+        }
+        
+        .camera-card.main {
+            border: 2px solid #f39c12;
+            box-shadow: 0 0 20px rgba(243, 156, 18, 0.2);
+        }
+        
+        .camera-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 15px;
+            background: rgba(0, 0, 0, 0.3);
+        }
+        
+        .main .camera-header {
+            padding: 15px 20px;
+        }
+        
+        .camera-name {
+            font-weight: bold;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .main .camera-name {
+            font-size: 1.2rem;
+        }
+        
+        .preview-badge {
+            background: #f39c12;
+            color: #000;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.65rem;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        
+        .click-hint {
+            font-size: 0.7rem;
+            color: #666;
+            font-weight: normal;
+        }
+        
+        .camera-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+        
+        .refresh-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            color: #fff;
+            padding: 6px 10px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .refresh-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+        
+        .refresh-btn:active {
+            transform: scale(0.95);
+        }
+        
+        .refresh-btn.refreshing {
+            pointer-events: none;
+            opacity: 0.6;
+        }
+        
+        .refresh-btn.refreshing .refresh-icon {
+            animation: spin 1s linear infinite;
+        }
+        
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #2ecc71;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-dot.offline {
+            background: #e74c3c;
+            animation: none;
+        }
+        
+        .status-dot.reconnecting {
+            background: #f39c12;
+            animation: blink 0.5s infinite;
+        }
+        
+        .status-dot.timeout {
+            background: #e67e22;
+            animation: blink 0.3s infinite;
+        }
+        
+        .status-dot.stabilizing {
+            background: #3498db;
+            animation: pulse 1s infinite;
+        }
+        
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        
+        .camera-feed-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+        }
+        
+        /* Both cameras same height */
+        .camera-card .camera-feed-container {
+            height: 400px;
+        }
+        
+        .camera-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .camera-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .camera-overlay.visible {
+            opacity: 1;
+        }
+        
+        .camera-overlay .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(255, 255, 255, 0.2);
+            border-top-color: #f39c12;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 15px;
+        }
+        
+        .side .camera-overlay .spinner {
+            width: 35px;
+            height: 35px;
+            border-width: 3px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .camera-overlay .status-text {
+            font-size: 1rem;
+            color: #fff;
+            margin-bottom: 5px;
+        }
+        
+        .side .camera-overlay .status-text {
+            font-size: 0.85rem;
+        }
+        
+        .camera-overlay .retry-text {
+            font-size: 0.85rem;
+            color: #888;
+        }
+        
+        .side .camera-overlay .retry-text {
+            font-size: 0.75rem;
+        }
+        
+        .camera-info {
+            padding: 10px 15px;
+            font-size: 0.8rem;
+            color: #888;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .main .camera-info {
+            padding: 12px 20px;
+            font-size: 0.85rem;
+        }
+        
+        .camera-info .last-frame {
+            color: #666;
+        }
+        
+        .camera-info .auto-reconnect {
+            color: #f39c12;
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .camera-info .auto-reconnect.hidden {
+            display: none;
+        }
+        
+        .mini-spinner {
+            width: 12px;
+            height: 12px;
+            border: 2px solid rgba(243, 156, 18, 0.3);
+            border-top-color: #f39c12;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        /* Empty slot placeholder */
+        .empty-slot {
+            background: rgba(255, 255, 255, 0.02);
+            border: 2px dashed rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 220px;
+            color: #555;
+        }
+        
+        .empty-slot .icon {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            opacity: 0.5;
+        }
+        
+        .empty-slot .text {
+            font-size: 0.85rem;
+        }
+        
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        
+        .stat-card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-3px);
+        }
+        
+        .stat-card .icon {
+            font-size: 2rem;
+            margin-bottom: 8px;
+        }
+        
+        .stat-card .value {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .stat-card .label {
+            color: #aaa;
+            font-size: 0.8rem;
+        }
+        
+        .stat-card.active .value { color: #e74c3c; }
+        .stat-card.resolved .value { color: #2ecc71; }
+        .stat-card.total .value { color: #3498db; }
+        .stat-card.duration .value { color: #f39c12; }
+        
+        /* Violations Section */
+        .violations-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            padding: 20px;
+        }
+        
+        .violations-section h2 {
+            margin-bottom: 15px;
+            font-size: 1.3rem;
+        }
+        
+        .violation-list {
+            list-style: none;
+        }
+        
+        .violation-item {
+            display: flex;
+            align-items: center;
+            padding: 12px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            margin-bottom: 8px;
+            transition: background 0.3s ease;
+        }
+        
+        .violation-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+        
+        .violation-status {
+            font-size: 1.3rem;
+            margin-right: 12px;
+        }
+        
+        .violation-info {
+            flex: 1;
+        }
+        
+        .violation-location {
+            font-weight: bold;
+            margin-bottom: 3px;
+            font-size: 0.95rem;
+        }
+        
+        .violation-time {
+            color: #888;
+            font-size: 0.8rem;
+        }
+        
+        .violation-duration {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 0.85rem;
+        }
+        
+        .no-violations {
+            text-align: center;
+            color: #888;
+            padding: 30px;
+        }
+        
+        .refresh-indicator {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 25px;
+            font-size: 0.85rem;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .live-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: #2ecc71;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        /* Toast notifications */
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+        }
+        
+        .toast {
+            background: rgba(0, 0, 0, 0.9);
+            padding: 15px 20px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            animation: slideIn 0.3s ease;
+            max-width: 350px;
+        }
+        
+        .toast.success { border-left: 4px solid #2ecc71; }
+        .toast.warning { border-left: 4px solid #f39c12; }
+        .toast.error { border-left: 4px solid #e74c3c; }
+        
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+        
+        .connection-banner {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: #e74c3c;
+            color: #fff;
+            padding: 10px 0;
+            text-align: center;
+            font-weight: bold;
+            z-index: 1001;
+            display: none;
+        }
+        
+        .server-status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+            font-size: 0.9rem;
+            margin-top: 10px;
+        }
+        
+        .server-status.disconnected {
+            color: #e74c3c;
+        }
+        
+        .server-status.connected {
+            color: #2ecc71;
+        }
+        
+        .frame-warning {
+            color: #e67e22;
+            font-size: 0.7rem;
+            margin-left: 5px;
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 1200px) {
+            .camera-layout {
+                grid-template-columns: 1fr;
+            }
+            
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        
+        @media (max-width: 768px) {
+            .camera-card .camera-feed-container {
+                height: 280px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="connection-banner" id="connectionBanner">
+        ⚠️ Connection to server lost. Attempting to reconnect...
+    </div>
+    
+    <div class="toast-container" id="toastContainer"></div>
+    
+    <div class="container">
+        <header>
+            <h1>🚗 Illegal Parking Monitor</h1>
+            <span class="demo-badge">LIVE MONITORING</span>
+            <span class="server-status connected" id="serverStatus">
+                <span class="live-dot" id="serverDot"></span>
+                <span id="serverStatusText">Connected</span>
+            </span>
+            <p class="last-updated">Last Updated: <span id="lastUpdated">{{ last_updated }}</span></p>
+        </header>
+        
+        <!-- Camera Monitoring Section - New 2-Screen Layout -->
+        <div class="camera-section">
+            <h2>📹 Live Camera Feeds</h2>
+            <div class="camera-layout" id="cameraLayout">
+                {% if cameras and cameras|length > 0 %}
+                    <!-- Camera 1 -->
+                    <div class="camera-card main" id="camera-card-{{ cameras[0].id }}" data-camera-id="{{ cameras[0].id }}">
+                        <div class="camera-header">
+                            <span class="camera-name">
+                                <span class="preview-badge">CAM 1</span>
+                                {{ cameras[0].name }}
+                            </span>
+                            <div class="camera-status">
+                                <button class="refresh-btn" id="refresh-btn-{{ cameras[0].id }}" data-camera-id="{{ cameras[0].id }}" title="Refresh camera">
+                                    <span class="refresh-icon">🔄</span>
+                                </button>
+                                <span class="status-dot" id="status-dot-{{ cameras[0].id }}"></span>
+                                <span id="status-text-{{ cameras[0].id }}">Connecting...</span>
+                            </div>
+                        </div>
+                        <div class="camera-feed-container">
+                            <img class="camera-feed" 
+                                 id="feed-{{ cameras[0].id }}" 
+                                 src="/video_feed/{{ cameras[0].id }}" 
+                                 alt="{{ cameras[0].name }}">
+                            <div class="camera-overlay" id="overlay-{{ cameras[0].id }}">
+                                <div class="spinner"></div>
+                                <div class="status-text" id="overlay-status-{{ cameras[0].id }}">Reconnecting...</div>
+                                <div class="retry-text" id="overlay-retry-{{ cameras[0].id }}">Auto-reconnecting...</div>
+                            </div>
+                        </div>
+                        <div class="camera-info">
+                            <span>IP: {{ cameras[0].ip }} | <span class="last-frame" id="last-frame-{{ cameras[0].id }}">--</span></span>
+                            <span class="auto-reconnect hidden" id="reconnect-status-{{ cameras[0].id }}">
+                                <span class="mini-spinner"></span>
+                                Auto-reconnecting
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <!-- Camera 2 -->
+                    {% if cameras|length > 1 %}
+                    <div class="camera-card main" id="camera-card-{{ cameras[1].id }}" data-camera-id="{{ cameras[1].id }}">
+                        <div class="camera-header">
+                            <span class="camera-name">
+                                <span class="preview-badge">CAM 2</span>
+                                {{ cameras[1].name }}
+                            </span>
+                            <div class="camera-status">
+                                <button class="refresh-btn" id="refresh-btn-{{ cameras[1].id }}" data-camera-id="{{ cameras[1].id }}" title="Refresh camera">
+                                    <span class="refresh-icon">🔄</span>
+                                </button>
+                                <span class="status-dot" id="status-dot-{{ cameras[1].id }}"></span>
+                                <span id="status-text-{{ cameras[1].id }}">Connecting...</span>
+                            </div>
+                        </div>
+                        <div class="camera-feed-container">
+                            <img class="camera-feed" 
+                                 id="feed-{{ cameras[1].id }}" 
+                                 src="/video_feed/{{ cameras[1].id }}" 
+                                 alt="{{ cameras[1].name }}">
+                            <div class="camera-overlay" id="overlay-{{ cameras[1].id }}">
+                                <div class="spinner"></div>
+                                <div class="status-text" id="overlay-status-{{ cameras[1].id }}">Reconnecting...</div>
+                                <div class="retry-text" id="overlay-retry-{{ cameras[1].id }}">Auto-reconnecting...</div>
+                            </div>
+                        </div>
+                        <div class="camera-info">
+                            <span>IP: {{ cameras[1].ip }} | <span class="last-frame" id="last-frame-{{ cameras[1].id }}">--</span></span>
+                            <span class="auto-reconnect hidden" id="reconnect-status-{{ cameras[1].id }}">
+                                <span class="mini-spinner"></span>
+                                Auto-reconnecting
+                            </span>
+                        </div>
+                    </div>
+                    {% else %}
+                    <!-- Empty slot placeholder -->
+                    <div class="empty-slot">
+                        <div class="icon">📷</div>
+                        <div class="text">Camera 2 slot available</div>
+                    </div>
+                    {% endif %}
+                {% else %}
+                    <div class="no-violations" style="grid-column: 1 / -1;">No cameras configured.</div>
+                {% endif %}
+            </div>
+        </div>
+        
+        <!-- Stats Section -->
+        <div class="stats-grid">
+            <div class="stat-card total">
+                <div class="icon">📌</div>
+                <div class="value" id="totalValue">{{ total }}</div>
+                <div class="label">Total Violations Today</div>
+            </div>
+            <div class="stat-card active">
+                <div class="icon">🔴</div>
+                <div class="value" id="activeValue">{{ active }}</div>
+                <div class="label">Active Violations</div>
+            </div>
+            <div class="stat-card resolved">
+                <div class="icon">✅</div>
+                <div class="value" id="resolvedValue">{{ resolved }}</div>
+                <div class="label">Resolved</div>
+            </div>
+            <div class="stat-card duration">
+                <div class="icon">⏱️</div>
+                <div class="value" id="durationValue">{{ avg_duration }}</div>
+                <div class="label">Avg Duration (min)</div>
+            </div>
+        </div>
+        
+        <!-- Recent Violations -->
+        <div class="violations-section">
+            <h2>📋 Recent Violations</h2>
+            <ul class="violation-list" id="violationList">
+                {% if recent %}
+                    {% for v in recent %}
+                    <li class="violation-item">
+                        <span class="violation-status">
+                            {% if v.status == 'active' %}🔴{% else %}✅{% endif %}
+                        </span>
+                        <div class="violation-info">
+                            <div class="violation-location">{{ v.location }}</div>
+                            <div class="violation-time">{{ v.timestamp.strftime('%H:%M:%S') }}</div>
+                        </div>
+                        <span class="violation-duration">{{ "%.1f"|format(v.duration) }} min</span>
+                    </li>
+                    {% endfor %}
+                {% else %}
+                    <li class="no-violations">No violations recorded yet.</li>
+                {% endif %}
+            </ul>
+        </div>
+    </div>
+    
+    <div class="refresh-indicator">
+        <span class="live-dot" id="refreshDot"></span>
+        <span id="refreshText">Live Monitoring</span>
+    </div>
+    
+    <script>
+        // Camera data from server using safe JSON
+        const cameraData = JSON.parse('{{ cameras | tojson | safe }}');
+        const cameraIds = cameraData.map(c => c.id);
+        
+        // Track states
+        let previousCameraStates = {};
+        let serverConnected = true;
+        let lastServerResponse = Date.now();
+        let feedErrors = {};
+        let feedRefreshPending = {};
+        let reconnectCooldown = {};
+        const RECONNECT_COOLDOWN_MS = 8000;
+        
+        // Refresh single camera via API
+        async function refreshCamera(cameraId) {
+            const btn = document.getElementById(`refresh-btn-${cameraId}`);
+            if (btn) {
+                btn.classList.add('refreshing');
+            }
+            
+            try {
+                const response = await fetch(`/api/camera/${cameraId}/reconnect`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    showToast(`🔄 ${data.message}`, 'warning');
+                    
+                    reconnectCooldown[cameraId] = Date.now() + RECONNECT_COOLDOWN_MS;
+                    feedErrors[cameraId] = 0;
+                    
+                    const overlay = document.getElementById(`overlay-${cameraId}`);
+                    const overlayStatus = document.getElementById(`overlay-status-${cameraId}`);
+                    if (overlay) overlay.classList.add('visible');
+                    if (overlayStatus) overlayStatus.textContent = 'Reconnecting...';
+                    
+                    setTimeout(() => {
+                        refreshFeed(cameraId);
+                    }, 2000);
+                } else {
+                    showToast('❌ Failed to refresh camera', 'error');
+                }
+            } catch (error) {
+                console.error('Refresh failed:', error);
+                showToast('❌ Failed to refresh camera', 'error');
+            } finally {
+                setTimeout(() => {
+                    if (btn) btn.classList.remove('refreshing');
+                }, 2000);
+            }
+        }
+        
+        // Show toast notification
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = message;
+            container.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.animation = 'slideIn 0.3s ease reverse';
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+        
+        // Update server connection status
+        function updateServerStatus(connected) {
+            const banner = document.getElementById('connectionBanner');
+            const serverStatus = document.getElementById('serverStatus');
+            const serverDot = document.getElementById('serverDot');
+            const serverText = document.getElementById('serverStatusText');
+            const refreshDot = document.getElementById('refreshDot');
+            const refreshText = document.getElementById('refreshText');
+            
+            if (connected && !serverConnected) {
+                showToast('✅ Connection restored!', 'success');
+                refreshAllFeeds();
+            } else if (!connected && serverConnected) {
+                showToast('⚠️ Connection lost...', 'error');
+            }
+            
+            serverConnected = connected;
+            
+            if (connected) {
+                if (banner) banner.style.display = 'none';
+                if (serverStatus) serverStatus.className = 'server-status connected';
+                if (serverDot) serverDot.className = 'live-dot';
+                if (serverText) serverText.textContent = 'Connected';
+                if (refreshDot) refreshDot.className = 'live-dot';
+                if (refreshText) refreshText.textContent = 'Live Monitoring';
+            } else {
+                if (banner) banner.style.display = 'block';
+                if (serverStatus) serverStatus.className = 'server-status disconnected';
+                if (serverDot) serverDot.className = 'live-dot disconnected';
+                if (serverText) serverText.textContent = 'Disconnected';
+                if (refreshDot) refreshDot.className = 'live-dot disconnected';
+                if (refreshText) refreshText.textContent = 'Reconnecting...';
+            }
+        }
+        
+        // Handle video feed error
+        function handleFeedError(cameraId) {
+            if (reconnectCooldown[cameraId] && Date.now() < reconnectCooldown[cameraId]) {
+                return;
+            }
+            
+            feedErrors[cameraId] = (feedErrors[cameraId] || 0) + 1;
+            
+            if (feedErrors[cameraId] >= 1 && !feedRefreshPending[cameraId]) {
+                feedRefreshPending[cameraId] = true;
+                
+                const overlay = document.getElementById(`overlay-${cameraId}`);
+                const overlayStatus = document.getElementById(`overlay-status-${cameraId}`);
+                
+                if (overlay) overlay.classList.add('visible');
+                if (overlayStatus) overlayStatus.textContent = 'Reconnecting...';
+                
+                setTimeout(() => {
+                    refreshFeed(cameraId);
+                    feedRefreshPending[cameraId] = false;
+                }, 200);
+            }
+        }
+        
+        // Handle video feed load
+        function handleFeedLoad(cameraId) {
+            feedErrors[cameraId] = 0;
+            feedRefreshPending[cameraId] = false;
+            
+            const overlay = document.getElementById(`overlay-${cameraId}`);
+            if (overlay) overlay.classList.remove('visible');
+        }
+        
+        // Refresh single camera feed
+        function refreshFeed(cameraId) {
+            const feed = document.getElementById(`feed-${cameraId}`);
+            if (feed) {
+                feed.src = `/video_feed/${cameraId}?t=${Date.now()}&r=${Math.random()}`;
+                feedErrors[cameraId] = 0;
+            }
+        }
+        
+        // Refresh all feeds
+        function refreshAllFeeds() {
+            cameraIds.forEach(id => {
+                if (!feedRefreshPending[id] && (!reconnectCooldown[id] || Date.now() >= reconnectCooldown[id])) {
+                    refreshFeed(id);
+                }
+            });
+        }
+        
+        // Update camera UI
+        function updateCameraUI(cam) {
+            const dot = document.getElementById(`status-dot-${cam.id}`);
+            const statusText = document.getElementById(`status-text-${cam.id}`);
+            const overlay = document.getElementById(`overlay-${cam.id}`);
+            const overlayStatus = document.getElementById(`overlay-status-${cam.id}`);
+            const overlayRetry = document.getElementById(`overlay-retry-${cam.id}`);
+            const lastFrame = document.getElementById(`last-frame-${cam.id}`);
+            const reconnectStatus = document.getElementById(`reconnect-status-${cam.id}`);
+            
+            if (!dot) return;
+            
+            const prevState = previousCameraStates[cam.id];
+            const wasDisconnected = prevState && !prevState.connected;
+            const nowConnected = cam.connected && !cam.frame_timeout;
+            const isStabilizing = cam.stabilizing;
+            
+            if (nowConnected && wasDisconnected && !isStabilizing) {
+                showToast(`✅ ${cam.name} connected!`, 'success');
+                reconnectCooldown[cam.id] = Date.now() + RECONNECT_COOLDOWN_MS;
+                feedErrors[cam.id] = 0;
+                feedRefreshPending[cam.id] = false;
+                setTimeout(() => refreshFeed(cam.id), 500);
+            }
+            
+            if (isStabilizing && prevState && !prevState.stabilizing) {
+                reconnectCooldown[cam.id] = Date.now() + RECONNECT_COOLDOWN_MS;
+                feedErrors[cam.id] = 0;
+            }
+            
+            if (!nowConnected && !isStabilizing && prevState && prevState.connected) {
+                if (!reconnectCooldown[cam.id] || Date.now() >= reconnectCooldown[cam.id]) {
+                    showToast(`⚠️ ${cam.name} reconnecting...`, 'warning');
+                }
+            }
+            
+            if (isStabilizing && cam.connected) {
+                dot.className = 'status-dot stabilizing';
+                if (statusText) statusText.textContent = 'Stabilizing...';
+                if (overlay) overlay.classList.remove('visible');
+                if (reconnectStatus) {
+                    reconnectStatus.classList.remove('hidden');
+                    reconnectStatus.innerHTML = '<span class="mini-spinner"></span> Stabilizing';
+                }
+            } else if (nowConnected) {
+                dot.className = 'status-dot';
+                if (statusText) statusText.textContent = 'Live';
+                if (overlay) overlay.classList.remove('visible');
+                if (reconnectStatus) reconnectStatus.classList.add('hidden');
+            } else if (cam.frame_timeout) {
+                dot.className = 'status-dot timeout';
+                if (statusText) statusText.textContent = `${cam.seconds_since_frame}s`;
+                if (overlay) overlay.classList.add('visible');
+                if (overlayStatus) overlayStatus.textContent = 'Reconnecting...';
+                if (overlayRetry) overlayRetry.textContent = 'Please wait...';
+                if (reconnectStatus) reconnectStatus.classList.remove('hidden');
+            } else {
+                dot.className = 'status-dot ' + (cam.retry_count > 0 ? 'reconnecting' : 'offline');
+                if (statusText) statusText.textContent = cam.status_message || 'Offline';
+                if (overlay) overlay.classList.add('visible');
+                if (overlayStatus) overlayStatus.textContent = cam.status_message || 'Reconnecting...';
+                if (reconnectStatus) reconnectStatus.classList.remove('hidden');
+                
+                if (overlayRetry) {
+                    overlayRetry.textContent = cam.retry_count > 0 
+                        ? `Attempt ${cam.retry_count}/2` 
+                        : 'Connecting...';
+                }
+            }
+            
+            if (lastFrame) {
+                if (cam.seconds_since_frame !== null && cam.seconds_since_frame > 0.5) {
+                    lastFrame.innerHTML = `Last: ${cam.last_frame} <span class="frame-warning">(${cam.seconds_since_frame}s)</span>`;
+                } else {
+                    lastFrame.textContent = cam.last_frame ? `Last: ${cam.last_frame}` : '--';
+                }
+            }
+            
+            previousCameraStates[cam.id] = { 
+                connected: nowConnected, 
+                frame_timeout: cam.frame_timeout,
+                stabilizing: isStabilizing
+            };
+        }
+        
+        // Check camera status
+        async function checkCameraStatus() {
+            try {
+                const response = await fetch('/api/cameras', { cache: 'no-store' });
+                if (response.ok) {
+                    const cameras = await response.json();
+                    lastServerResponse = Date.now();
+                    updateServerStatus(true);
+                    cameras.forEach(updateCameraUI);
+                } else {
+                    throw new Error('Server error');
+                }
+            } catch (error) {
+                console.error('Camera check failed:', error);
+                updateServerStatus(false);
+            }
+        }
+        
+        // Check server connection
+        function checkServerConnection() {
+            if (Date.now() - lastServerResponse > 10000) {
+                updateServerStatus(false);
+            }
+        }
+        
+        // Refresh stats
+        async function refreshStats() {
+            try {
+                const response = await fetch('/api/stats', { cache: 'no-store' });
+                if (response.ok) {
+                    const data = await response.json();
+                    lastServerResponse = Date.now();
+                    
+                    const el = id => document.getElementById(id);
+                    if (el('totalValue')) el('totalValue').textContent = data.total;
+                    if (el('activeValue')) el('activeValue').textContent = data.active;
+                    if (el('resolvedValue')) el('resolvedValue').textContent = data.resolved;
+                    if (el('durationValue')) el('durationValue').textContent = data.avg_duration;
+                    if (el('lastUpdated')) el('lastUpdated').textContent = data.last_updated;
+                    
+                    const list = el('violationList');
+                    if (list && data.recent && data.recent.length > 0) {
+                        list.innerHTML = data.recent.map(v => `
+                            <li class="violation-item">
+                                <span class="violation-status">${v.status === 'active' ? '🔴' : '✅'}</span>
+                                <div class="violation-info">
+                                    <div class="violation-location">${v.location}</div>
+                                    <div class="violation-time">${v.timestamp}</div>
+                                </div>
+                                <span class="violation-duration">${v.duration} min</span>
+                            </li>
+                        `).join('');
+                    }
+                }
+            } catch (error) {
+                console.error('Stats refresh failed:', error);
+            }
+        }
+        
+        // Attach feed event handlers
+        function attachFeedHandlers() {
+            cameraIds.forEach(id => {
+                const feed = document.getElementById(`feed-${id}`);
+                if (feed) {
+                    feed.onerror = () => handleFeedError(id);
+                    feed.onload = () => handleFeedLoad(id);
+                }
+            });
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            attachFeedHandlers();
+            checkCameraStatus();
+            refreshStats();
+            
+            setInterval(checkCameraStatus, 200);
+            setInterval(refreshStats, 5000);
+            setInterval(checkServerConnection, 2000);
+            
+            // Attach refresh button handlers
+            cameraIds.forEach(id => {
+                const btn = document.getElementById(`refresh-btn-${id}`);
+                if (btn) {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        refreshCamera(id);
+                    });
+                }
+            });
+        });
+        
+        // Handle visibility change
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                checkCameraStatus();
+                refreshAllFeeds();
+            }
+        });
+        
+        // Handle online/offline
+        window.addEventListener('online', () => {
+            showToast('🌐 Internet restored', 'success');
+            checkCameraStatus();
+            refreshAllFeeds();
+        });
+        
+        window.addEventListener('offline', () => {
+            showToast('⚠️ Internet lost', 'error');
+            updateServerStatus(false);
+        });
+    </script>
+</body>
+</html>
