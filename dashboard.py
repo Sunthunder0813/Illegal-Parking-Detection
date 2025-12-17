@@ -8,7 +8,11 @@ from datetime import datetime, timedelta
 from flask import Flask, render_template, jsonify, Response
 
 # Import detection models
-from models import HailoDetector, Detection, InferenceResult, VEHICLE_CLASSES
+from models import HailoDetector, Detection, InferenceResult, VEHICLE_CLASSES, ALL_DETECTION_CLASSES
+
+# Add PERSON_CLASSES and ALL_DETECTION_CLASSES for broader detection
+PERSON_CLASSES = ['person']
+ALL_DETECTION_CLASSES = VEHICLE_CLASSES + PERSON_CLASSES
 
 # Initialize Flask app
 app = Flask(__name__, 
@@ -76,6 +80,7 @@ class CameraStream:
         self.detection_enabled = True  # Enable/disable detection
         self.detection_interval = 0.1  # Run detection every 100ms
         self.last_detection_run = None
+        self.detect_all_classes = True  # Enable detection of all objects (persons, vehicles, etc.)
         
     def get_rtsp_url(self):
         """Generate RTSP URL for the camera"""
@@ -86,7 +91,7 @@ class CameraStream:
             return f"rtsp://{CAMERA_USERNAME}@{ip}:554/stream1"
     
     def run_detection(self, frame):
-        """Run vehicle detection on a frame"""
+        """Run object detection on a frame"""
         global detector
         if detector is None or not self.detection_enabled:
             return []
@@ -101,8 +106,13 @@ class CameraStream:
             
             self.last_detection_run = now
             
-            # Run detection
-            detections = detector.detect(frame, recognize_plates=True)
+            # Run detection - detect all objects including persons
+            if self.detect_all_classes:
+                # Use detect_all to get persons, vehicles, and other objects
+                detections = detector.detect_all(frame, recognize_plates=False)
+            else:
+                # Only detect vehicles with plate recognition
+                detections = detector.detect(frame, recognize_plates=True, vehicle_only=True)
             
             with self.detection_lock:
                 self.detections = detections
@@ -126,14 +136,22 @@ class CameraStream:
         detections = self.get_detections()
         for det in detections:
             x1, y1, x2, y2 = det.bbox
-            color = (0, 255, 0)  # Green for vehicles
+            
+            # Different colors for different object types
+            label_lower = det.label.lower()
+            if label_lower == 'person':
+                color = (255, 0, 255)  # Magenta for persons
+            elif label_lower in [v.lower() for v in VEHICLE_CLASSES]:
+                color = (0, 255, 0)  # Green for vehicles
+            else:
+                color = (0, 255, 255)  # Yellow for other objects
             
             # Draw bounding box
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             
             # Draw label
             label = f"{det.label}: {det.confidence:.2f}"
-            if det.plate_number:
+            if hasattr(det, 'plate_number') and det.plate_number:
                 label += f" | {det.plate_number}"
             
             # Background for label
@@ -143,7 +161,7 @@ class CameraStream:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             
             # Draw plate bbox if available
-            if det.plate_bbox:
+            if hasattr(det, 'plate_bbox') and det.plate_bbox:
                 px1, py1, px2, py2 = det.plate_bbox
                 cv2.rectangle(frame, (px1, py1), (px2, py2), (255, 0, 0), 2)
         
@@ -591,7 +609,7 @@ def api_camera_detections(camera_id):
         })
     return jsonify({
         'error': 'Camera not found'
-    }), 404
+    }, 404)
 
 @app.route("/api/camera/<int:camera_id>/reconnect", methods=['POST'])
 def api_camera_reconnect(camera_id):
@@ -606,7 +624,7 @@ def api_camera_reconnect(camera_id):
     return jsonify({
         'success': False,
         'message': 'Camera not found'
-    }), 404
+    }, 404)
 
 @app.route("/api/cameras/reconnect-all", methods=['POST'])
 def api_cameras_reconnect_all():
