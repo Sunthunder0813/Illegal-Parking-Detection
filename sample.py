@@ -255,7 +255,27 @@ try:
     output_vstreams_info = network_group.get_output_vstream_infos()
     input_info = input_vstreams_info[0]
     output_info = output_vstreams_info
-    
+
+    # --- DEBUG: Print input_info.shape ---
+    print(f"[DEBUG] input_info.shape: {input_info.shape}")
+
+    # Use the correct input shape
+    # Typical shapes: [1, 3, 640, 640] (NCHW) or [1, 640, 640, 3] (NHWC)
+    input_shape = input_info.shape
+    if len(input_shape) == 4:
+        if input_shape[1] == 3:  # NCHW
+            INPUT_HEIGHT = input_shape[2]
+            INPUT_WIDTH = input_shape[3]
+            INPUT_LAYOUT = "NCHW"
+        elif input_shape[3] == 3:  # NHWC
+            INPUT_HEIGHT = input_shape[1]
+            INPUT_WIDTH = input_shape[2]
+            INPUT_LAYOUT = "NHWC"
+        else:
+            raise RuntimeError(f"Unknown input shape layout: {input_shape}")
+    else:
+        raise RuntimeError(f"Unexpected input shape: {input_shape}")
+
     # Create vstream params using the correct API
     input_vstream_params = InputVStreamParams.make(network_group, format_type=FormatType.UINT8)
     output_vstream_params = OutputVStreamParams.make(network_group, format_type=FormatType.FLOAT32)
@@ -383,8 +403,14 @@ def run_inference(frame):
         # BGR -> RGB
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
-        # ✅ NHWC, uint8, batch size = 1
-        input_data = np.expand_dims(rgb, axis=0).astype(np.uint8)
+        # Prepare input_data according to model layout
+        if INPUT_LAYOUT == "NHWC":
+            input_data = np.expand_dims(rgb, axis=0).astype(np.uint8)  # [1, H, W, 3]
+        elif INPUT_LAYOUT == "NCHW":
+            input_data = np.transpose(rgb, (2, 0, 1))  # [3, H, W]
+            input_data = np.expand_dims(input_data, axis=0).astype(np.uint8)  # [1, 3, H, W]
+        else:
+            raise RuntimeError(f"Unknown INPUT_LAYOUT: {INPUT_LAYOUT}")
 
         # Ensure contiguous memory
         input_data = np.ascontiguousarray(input_data)
