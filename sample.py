@@ -408,23 +408,24 @@ def run_hailo_inference(frame):
     return postprocess_results(raw_output, frame.shape)
 
 def run_inference(frame):
-    # Always use CPU YOLO for detection, regardless of HAILO_AVAILABLE
+    # Use Hailo for detection if available and HEF is loaded, else fallback to CPU YOLO
     try:
-        results = model(frame, verbose=False)
-        detections = []
-        for result in results:
-            for box in result.boxes:
-                cls_id = int(box.cls[0])
-                class_name = COCO_CLASS_NAMES[cls_id] if cls_id < len(COCO_CLASS_NAMES) else "unknown"
-                # Detect person by class name (COCO index 0)
-                if class_name == "person":
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
-                # Or keep your existing logic for vehicles/person
-                elif cls_id in detected_classes:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
-        return detections
+        if HAILO_AVAILABLE and target is not None:
+            return run_hailo_inference(frame)
+        else:
+            results = model(frame, verbose=False)
+            detections = []
+            for result in results:
+                for box in result.boxes:
+                    cls_id = int(box.cls[0])
+                    class_name = COCO_CLASS_NAMES[cls_id] if cls_id < len(COCO_CLASS_NAMES) else "unknown"
+                    if class_name == "person":
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
+                    elif cls_id in detected_classes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        detections.append({'bbox': (x1, y1, x2, y2), 'conf': float(box.conf[0]), 'class_id': cls_id, 'class_name': class_name})
+            return detections
     except Exception as e:
         print(f"⚠️ Inference failed: {e}")
         return []
