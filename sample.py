@@ -181,11 +181,7 @@ INPUT_WIDTH = 640
 # Detection settings
 # -----------------------------
 DETECTION_CLASSES = {
-    0: "Person",  # YOLOv8n COCO: 0 is 'person'
-    2: "Car",
-    3: "Motorcycle",
-    5: "Bus",
-    7: "Truck"
+    0: "Person"  # Only detect 'person'
 }
 
 CONFIDENCE_THRESHOLD = 0.10  # Lowered from 0.25 to 0.15 for more sensitivity
@@ -194,13 +190,10 @@ DEBUG_DETECTIONS = True
 def get_label(class_id):
     if class_id == 0:
         return "Person"
-    elif class_id in [2, 3, 5, 7]:
-        return "Vehicle"
     return "Object"
 
 COLORS = {
     "Person": (0, 255, 0),
-    "Vehicle": (255, 0, 0),
     "Object": (0, 255, 255)
 }
 
@@ -333,7 +326,8 @@ def postprocess_results(output, frame_shape, conf_threshold=None):
             if DEBUG_DETECTIONS and cls_id == 0:
                 print(f"[DEBUG] Person conf: {conf:.3f}")
 
-            if conf > conf_threshold and cls_id in DETECTION_CLASSES:
+            # Only detect person
+            if conf > conf_threshold and cls_id == 0:
                 scale_x = original_w / INPUT_WIDTH
                 scale_y = original_h / INPUT_HEIGHT
                 x1 = int((x_center - box_w / 2) * scale_x)
@@ -421,12 +415,12 @@ def run_inference(frame):
 
 
 def draw_detections(frame, detections, cam_name):
-    counts = {"Person": 0, "Vehicle": 0}
+    counts = {"Person": 0}
     for det in detections:
         x1, y1, x2, y2 = det['bbox']
         label = det.get('label', 'Object')
         color = COLORS.get(label, (0, 255, 255))
-        if label in counts:
+        if label == "Person":
             counts[label] += 1
         # --- DEBUG: Print before drawing ---
         print(f"[DEBUG] Drawing box: ({x1},{y1})-({x2},{y2}) label={label} conf={det['conf']:.2f}")
