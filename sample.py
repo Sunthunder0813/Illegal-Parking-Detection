@@ -160,7 +160,8 @@ except ImportError:
 # -----------------------------
 PT_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.pt"
 ONNX_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.onnx"
-HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n.hef"
+# Use the full COCO HEF (person + vehicles + all classes)
+HEF_MODEL = "/home/set-admin/Illegal-Parking-Detection/yolov8n_full.hef"  # <-- Make sure this matches the downloaded file
 
 # -----------------------------
 # Auto-download HEF if missing
