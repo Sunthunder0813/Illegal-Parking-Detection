@@ -286,9 +286,32 @@ class InferenceResult:
 def check_hailo_available() -> bool:
     """Check if Hailo-8L platform is available on Raspberry Pi 5"""
     try:
+        # Try importing the hailo_platform module
+        import hailo_platform
+        print(f"✅ hailo_platform module found: {hailo_platform.__file__}")
+        
+        # Try importing specific classes
         from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
-        return True
-    except ImportError:
+        print("✅ All Hailo classes imported successfully")
+        
+        # Try to create a VDevice to verify hardware is accessible
+        try:
+            params = VDevice.create_params()
+            target = VDevice(params)
+            target.release()
+            print("✅ Hailo device is accessible")
+            return True
+        except Exception as e:
+            print(f"⚠️ Hailo device not accessible: {e}")
+            # Still return True if imports work - device might be busy
+            return True
+            
+    except ImportError as e:
+        print(f"❌ hailo_platform import failed: {e}")
+        print("   Install with: sudo apt install hailo-all")
+        return False
+    except Exception as e:
+        print(f"❌ Hailo check failed: {e}")
         return False
 
 
@@ -734,7 +757,7 @@ class HailoDetector:
     
     Includes integrated Philippine license plate recognition.
     
-    Example:
+    Example:Im using raspi5 with Hailo 13 tops to Support the camera detection for Person use Yolov8n HEF 
         detector = HailoDetector(enable_plate_recognition=True)
         detections = detector.detect(frame)
         for det in detections:
@@ -803,6 +826,7 @@ class HailoDetector:
         self._network_group_params = None
         self._input_vstream_info = None
         self._output_vstream_info = None
+        self._input_name = None
         
         # CPU fallback
         self._yolo_model = None
@@ -816,48 +840,79 @@ class HailoDetector:
     def _initialize(self, auto_download: bool = True):
         """Initialize the appropriate inference backend for Raspberry Pi 5"""
         
+        print("\n" + "=" * 50)
+        print("🔧 INITIALIZING HAILO-8L DETECTOR")
+        print("=" * 50)
+        
         # Check Hailo device info first
         self.hailo_device_info = check_hailo_device_info()
         if self.hailo_device_info:
-            print(f"🔧 Detected Hailo device: {self.hailo_device_info.get('device', 'Unknown')}")
+            print(f"✅ Detected Hailo device: {self.hailo_device_info.get('device', 'Unknown')}")
             print(f"   Performance: {self.hailo_device_info.get('tops', 'Unknown')}")
+        else:
+            print("⚠️ Could not get Hailo device info via hailortcli")
         
-        # Try Hailo first
-        if check_hailo_available():
-            # Check both possible HEF file names
-            hef_exists = self.hef_path.is_file()
-            if not hef_exists and HEF_MODEL_PATH_ALT.is_file():
+        # Check if Hailo platform is available
+        print("\n🔍 Checking Hailo platform availability...")
+        hailo_platform_available = check_hailo_available()
+        
+        if not hailo_platform_available:
+            print("❌ Hailo platform NOT available - will use CPU fallback")
+            self._init_cpu_fallback()
+            if self.enable_plate_recognition:
+                self._init_plate_recognition()
+            return
+        
+        # Find HEF file
+        print(f"\n🔍 Looking for HEF model file...")
+        print(f"   Primary path: {self.hef_path}")
+        print(f"   Alt path: {HEF_MODEL_PATH_ALT}")
+        
+        hef_exists = self.hef_path.is_file()
+        print(f"   Primary exists: {hef_exists}")
+        
+        if not hef_exists:
+            if HEF_MODEL_PATH_ALT.is_file():
                 self.hef_path = HEF_MODEL_PATH_ALT
                 hef_exists = True
-            
-            if not hef_exists and auto_download:
-                print("⚠️ HEF file not found. Attempting auto-download...")
+                print(f"   ✅ Found at alt path: {self.hef_path}")
+            elif auto_download:
+                print("   ⚠️ HEF file not found. Attempting auto-download...")
                 if download_hef_model(self.hef_path):
                     hef_exists = True
                 elif download_hef_model(HEF_MODEL_PATH_ALT):
                     self.hef_path = HEF_MODEL_PATH_ALT
                     hef_exists = True
-            
-            if hef_exists:
-                try:
-                    self._init_hailo()
-                    self.hailo_available = True
-                    print(f"✅ Hailo-8L (13 TOPS) initialized successfully")
-                    print(f"   Model: {self.hef_path.name}")
-                    print(f"   Input shape: ({self.input_height}, {self.input_width})")
-                    return
-                except Exception as e:
-                    print(f"❌ Failed to initialize Hailo: {e}")
-                    import traceback
-                    traceback.print_exc()
-        else:
-            print("⚠️ Hailo platform not available")
-            print("   For Raspberry Pi 5 with Hailo-8L M.2 HAT:")
-            print("   sudo apt update && sudo apt install hailo-all")
-            print("   sudo reboot")
         
-        # Fallback to CPU
-        self._init_cpu_fallback()
+        if not hef_exists:
+            print(f"❌ HEF file not found at: {self.hef_path}")
+            print("   Please download yolov8n.hef or yolov8n_h8l.hef")
+            print("   and place it in the project directory")
+            self._init_cpu_fallback()
+            if self.enable_plate_recognition:
+                self._init_plate_recognition()
+            return
+        
+        print(f"✅ HEF file found: {self.hef_path}")
+        print(f"   Size: {self.hef_path.stat().st_size / 1024 / 1024:.2f} MB")
+        
+        # Try to initialize Hailo
+        print("\n🔧 Initializing Hailo inference pipeline...")
+        try:
+            self._init_hailo()
+            self.hailo_available = True
+            print("\n" + "=" * 50)
+            print("✅ HAILO-8L INITIALIZED SUCCESSFULLY!")
+            print(f"   Model: {self.hef_path.name}")
+            print(f"   Input: {self.input_width}x{self.input_height}")
+            print(f"   Target classes: {list(self.target_classes.values())}")
+            print("=" * 50 + "\n")
+        except Exception as e:
+            print(f"\n❌ Failed to initialize Hailo: {e}")
+            import traceback
+            traceback.print_exc()
+            print("\n⚠️ Falling back to CPU inference...")
+            self._init_cpu_fallback()
         
         # Initialize plate recognition
         if self.enable_plate_recognition:
@@ -867,36 +922,62 @@ class HailoDetector:
         """Initialize Hailo-8L inference pipeline for Raspberry Pi 5"""
         from hailo_platform import HEF, VDevice, HailoStreamInterface, InferVStreams, ConfigureParams
         
-        print(f"🔧 Loading HEF model: {self.hef_path}")
+        print(f"   Loading HEF: {self.hef_path}")
         self._hef = HEF(str(self.hef_path))
         
-        # Create VDevice with Hailo-8L specific params
+        print("   Creating VDevice...")
         params = VDevice.create_params()
         self._target = VDevice(params)
         
-        # Configure for PCIe interface (M.2 HAT uses PCIe)
-        configure_params = ConfigureParams.create_from_hef(
-            self._hef, 
-            interface=HailoStreamInterface.PCIe
-        )
+        print("   Configuring network...")
+        # Try PCIe first (M.2 HAT), then fallback to auto
+        try:
+            configure_params = ConfigureParams.create_from_hef(
+                self._hef, 
+                interface=HailoStreamInterface.PCIe
+            )
+        except Exception as e:
+            print(f"   ⚠️ PCIe config failed, trying auto: {e}")
+            configure_params = ConfigureParams.create_from_hef(self._hef)
+        
         self._network_group = self._target.configure(self._hef, configure_params)[0]
         self._network_group_params = self._network_group.create_params()
         
         # Get input/output stream info
-        self._input_vstream_info = self._network_group.get_input_vstream_infos()[0]
-        self._output_vstream_info = self._network_group.get_output_vstream_infos()
+        input_vstreams = self._network_group.get_input_vstream_infos()
+        output_vstreams = self._network_group.get_output_vstream_infos()
+        
+        print(f"   Input streams: {len(input_vstreams)}")
+        for i, vs in enumerate(input_vstreams):
+            print(f"      [{i}] {vs.name}: shape={vs.shape}")
+        
+        print(f"   Output streams: {len(output_vstreams)}")
+        for i, vs in enumerate(output_vstreams):
+            print(f"      [{i}] {vs.name}: shape={vs.shape}")
+        
+        self._input_vstream_info = input_vstreams[0]
+        self._output_vstream_info = output_vstreams
         
         # Get input dimensions from HEF
-        self.input_height = self._input_vstream_info.shape[1]
-        self.input_width = self._input_vstream_info.shape[2]
+        # Shape is typically (batch, height, width, channels) or (batch, channels, height, width)
+        shape = self._input_vstream_info.shape
+        if len(shape) == 4:
+            if shape[3] == 3:  # NHWC format
+                self.input_height = shape[1]
+                self.input_width = shape[2]
+            else:  # NCHW format
+                self.input_height = shape[2]
+                self.input_width = shape[3]
+        elif len(shape) == 3:  # HWC format
+            if shape[2] == 3:
+                self.input_height = shape[0]
+                self.input_width = shape[1]
+            else:
+                self.input_height = shape[1]
+                self.input_width = shape[2]
+        
         self._input_name = self._input_vstream_info.name
-        
-        print(f"   Input stream: {self._input_name}")
-        print(f"   Output streams: {len(self._output_vstream_info)}")
-        
-        # Initialize plate recognition for Hailo too
-        if self.enable_plate_recognition:
-            self._init_plate_recognition()
+        print(f"   Configured input: {self._input_name} -> {self.input_width}x{self.input_height}")
 
     def _init_plate_recognition(self):
         """Initialize Philippine license plate recognizer"""

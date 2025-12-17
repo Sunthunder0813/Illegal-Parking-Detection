@@ -48,38 +48,56 @@ def init_detector():
     """Initialize the object detector for Raspberry Pi 5 + Hailo-8L"""
     global detector
     if not DETECTOR_AVAILABLE:
-        print("⚠️ Detector not available - running without detection")
+        print("❌ Detector module not available - running without detection")
         return False
     
     try:
-        print("🔧 Initializing Hailo-8L object detector...")
-        print("   Hardware: Raspberry Pi 5 + Hailo-8L (13 TOPS)")
+        print("\n" + "=" * 60)
+        print("🚀 STARTING HAILO-8L DETECTOR INITIALIZATION")
+        print("   Hardware Target: Raspberry Pi 5 + Hailo-8L (13 TOPS)")
+        print("=" * 60)
         
         # Get system info first
         try:
             sys_info = get_system_info()
+            print(f"\n📊 System Info:")
             print(f"   Hailo Available: {sys_info.get('hailo_available', False)}")
+            print(f"   HEF Exists: {sys_info.get('hef_exists', False)}")
+            print(f"   HEF Path: {sys_info.get('hef_path', 'N/A')}")
             if sys_info.get('hailo_device'):
-                print(f"   Device: {sys_info['hailo_device'].get('device', 'Unknown')}")
-        except:
-            pass
+                device_info = sys_info['hailo_device']
+                print(f"   Device: {device_info.get('device', 'Unknown')}")
+                print(f"   TOPS: {device_info.get('tops', 'Unknown')}")
+        except Exception as e:
+            print(f"⚠️ Could not get system info: {e}")
         
+        # Initialize detector - this should use Hailo if available
         detector = HailoDetector(
-            detect_all_objects=True,  # Enable detection of persons, vehicles, objects
+            detect_all_objects=True,
             enable_plate_recognition=True,
-            confidence_threshold=0.35  # Optimized for Hailo-8L YOLOv8n
+            confidence_threshold=0.35,
+            auto_download=True  # Try to download HEF if missing
         )
         
+        # Check if we're actually using Hailo
+        print("\n" + "=" * 60)
         if detector.hailo_available:
-            print("✅ Hailo-8L object detector initialized successfully")
-            print(f"   Using: Hailo-8L accelerator (13 TOPS)")
+            print("✅ SUCCESS: Running on HAILO-8L accelerator!")
+            print(f"   Expected performance: 30+ FPS")
         else:
-            print("⚠️ Running on CPU (slower) - Hailo-8L not available")
-            print("   For best performance, ensure Hailo-8L is properly installed")
+            print("⚠️ WARNING: Running on CPU (SLOW!)")
+            print("   Expected performance: 1-2 FPS")
+            print("\n   To enable Hailo acceleration:")
+            print("   1. Ensure Hailo-8L M.2 HAT is properly connected")
+            print("   2. Run: sudo apt update && sudo apt install hailo-all")
+            print("   3. Reboot: sudo reboot")
+            print("   4. Download YOLOv8n HEF file for Hailo-8L")
+        print("=" * 60 + "\n")
         
         return True
+        
     except Exception as e:
-        print(f"❌ Failed to initialize detector: {e}")
+        print(f"\n❌ Failed to initialize detector: {e}")
         import traceback
         traceback.print_exc()
         detector = None
